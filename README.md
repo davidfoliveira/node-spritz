@@ -9,14 +9,13 @@
 # Some examples
 
 	var
-	    spritz = require('../lib/spritz');
+	    spritz = require('spritz');
 
 	// Start
 	spritz.start({port:8090});
 
 	// Listen on homepage
 	spritz.on('/',function(req,res){
-            
 	    res.writeHead(200,{});
 	    res.end('Aperol o Campari?');
 	});
