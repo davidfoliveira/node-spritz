@@ -24,7 +24,7 @@
 	    check: function(user,pass,callback){
 	        return callback(null,(username=="vino" && password=="prosecco"));
 	    }
-	);
+	});
 	
 	// Listen on a static route
 	spritz.on('/',function(req,res){
