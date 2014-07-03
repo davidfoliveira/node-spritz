@@ -186,6 +186,7 @@ exports.proxy = function(req,res,hostOrURL,port,opts){
 
 	var
 		args = Array.prototype.slice.call(arguments, 0),
+		url,
 		timeout,
 		fired = false,
 		_opts = {};
@@ -197,12 +198,15 @@ exports.proxy = function(req,res,hostOrURL,port,opts){
 	opts = args.pop();
 	port = args.shift();
 
+	// What url ?
+	url = (req.url === req.urlNoArgs) ? req.originalURL : req.url;
+
 	// Options with defaults
 	_opts = _merge({
 		proto:   "http",
 		host:    hostOrURL,
 		port:    port,
-		path:    req.url,
+		path:    url,
 		headers: req.headers || {}
 	},opts||{});
 
@@ -383,6 +387,7 @@ var handleRequest = function(req,res) {
 	if ( req.url.match(/^(.*?)\?(.*)$/) ) {
 		req.originalURL = req.url;
 		req.url = RegExp.$1;
+		req.urlNoArgs = RegExp.$1;
 		req.args = qs.parse(RegExp.$2);
 	}
 
