@@ -8,7 +8,6 @@
  */
 
 var
-
 	fs		= require('fs'),
 	cluster		= require('cluster'),
 	http		= require('http'),
@@ -21,13 +20,14 @@ var
 	rxRoutes	= [],
 	statusRoutes	= {},
 	authRules	= [],
-	templEngines	= {};
+	templEngines	= {},
+	self		= exports;
+
 
 // Start
 exports.start = function(opts,handler){
 
 	var
-		self = this,
 		args = Array.prototype.slice.call(arguments, 0),
 		numProcs,
 		workers = [];
@@ -37,7 +37,7 @@ exports.start = function(opts,handler){
 		handler = opts;
 		opts = null;
 	}
-	if ( handler == null )
+	if ( !handler )
 		handler = function(){};
 	if ( !opts )
 		opts = { port: 8080, address: "0.0.0.0" };
@@ -75,8 +75,8 @@ exports.start = function(opts,handler){
 			});
 
 			// Some fake methods
-			exports.on = function(){};
-			exports.auth = function(){};
+			self.on = function(){};
+			self.auth = function(){};
 		}
 		else {
 			process.title = "Spritz child process";
@@ -100,7 +100,6 @@ exports.stop = function(handler){
 exports.staticfile = function(req,res,filename,status,headers) {
 
 	var
-		self = this,
 		ext = "unknown";
 
 	// Remove unsafe stuff
@@ -167,8 +166,7 @@ exports.text = function(req,res,content,status,headers) {
 exports.json = function(req,res,content,status,headers,pretty) {
 
 	var
-		strfyArgs = [content],
-		content;
+		strfyArgs = [content];
 
 	if ( pretty )
 		strfyArgs.push(null,4);
@@ -293,9 +291,6 @@ exports.proxy = function(req,res,hostOrURL,port,opts){
 // Start the HTTP server
 exports.startServer = function(opts,handler){
 
-	var
-		self = this;
-
 	// Our router
 	self.on = function(r,opts,reqHandler){
 		var
@@ -371,7 +366,6 @@ exports.startServer = function(opts,handler){
 var handleRequest = function(req,res) {
 
 	var
-		self = this,
 		now = new Date();
 
 	// Request related values
@@ -409,6 +403,7 @@ var handleRequest = function(req,res) {
 // Read data from POST and parse it
 var readPOSTData = function(req,handler) {
 
+	// POST data already read, don't do it again
 	if ( req._readPOSTData )
 		return handler(null,req);
 	req._readPOSTData = true;
@@ -445,7 +440,6 @@ var readPOSTData = function(req,handler) {
 				if ( req.POSTargs['json'] )
 					try { req.POSTjson = JSON.parse(req.POSTargs['json']); } catch(ex){  _log_error("Error parsing POST JSON: ",ex); }
 			}
-
 			return handler(null,req);
 		});
 	}
@@ -472,7 +466,6 @@ var route = function(req,res) {
 	// Authenticate
 	return _if ( auth,
 		function(next) {
-
 			// Parse the Authorization header
 			if ( req.headers && req.headers.authorization && req.headers.authorization.match(/^basic +(.+)/i) ) {
 				var b64Auth = new Buffer(RegExp.$1,'base64');
@@ -484,7 +477,6 @@ var route = function(req,res) {
 
 			// Check the credentials
 			return auth.check(authUser,authPass,next);
-
 		},
 		function(err,valid) {
 			if ( err ) {
@@ -507,7 +499,7 @@ var route = function(req,res) {
 		}
 	);
 
-}
+};
 
 // Route a request
 var _route = function(req,res) {
@@ -562,7 +554,7 @@ var routeStatus = function(req,res,alreadyServed,headers) {
 	if ( req.onStatusRouteH )
 		return;
 
-	// Already served ?
+	// Already served ? Mark it on request, so future route handlers can take this in consideration
 	req.served = alreadyServed;
 
 	// Do we have a status handler ?
@@ -571,7 +563,7 @@ var routeStatus = function(req,res,alreadyServed,headers) {
 		return statusRoutes[res.statusCode.toString()].handler(req,res);
 	}
 
-	// Already served ?
+	// Already served ? Ciao!
 	if ( alreadyServed )
 		return;
 
@@ -583,7 +575,7 @@ var routeStatus = function(req,res,alreadyServed,headers) {
 
 	// Something to answer? Answer..!
 	if ( ans && !alreadyServed )
-		return exports.json(req,res,ans,res.statusCode,headers);
+		return self.json(req,res,ans,res.statusCode,headers);
 
 };
 
@@ -663,39 +655,48 @@ exports.template = function(req,res,filename,args,status,headers){
 };
 */
 
-function _log_info() {
+// Logging functions
+var _log_info = function() {
         return _log("INFO:  ",arguments);
 }
-function _log_warn() {
+var _log_warn = function() {
         return _log("WARN:  ",arguments);
 }
-function _log_error() {
+var _log_error = function() {
         return _log("ERROR: ",arguments);
 }
-function _log(type,args) {
+var _log = function(type,args) {
 	var
 		_args = [type],
-		_keys = args ? Object.keys(args) : [];
+		_keys;
 
+	// Convert arguments into array - old style
+	_keys = args ? Object.keys(args) : [];
 	_keys.forEach(function(num){
 		_args.push(args[num]);
 	});
+
+	// Master, send directly to console
 	if ( cluster.isMaster ) {
 		_args.unshift("MASTER:\t");
 		console.log.apply(console,_args);
 	}
+	// Children send via cluster messaging system
 	else {
 		// Send to the master process, so we avoid problems with many processes writing on the same file
-		process.send({fn:'console.log',args: _args})
+		process.send({fn:'console.log',args: _args});
 	}
 }
 
+// Access log
 var _access_log = function(req,res,length) {
 	var
 		timeSpent = new Date().getTime() - req.xConnectDate.getTime();
 
 	_log(req.xRemoteAddr+(req.xDirectRemoteAddr?"/"+req.xDirectRemoteAddr:"")+" - "+req.xRequestID+" ["+req.xConnectDate.toString()+"] \""+req.method+" "+(req.originalURL || req.url)+" HTTP/"+req.httpVersionMajor+"."+req.httpVersionMajor+"\" "+res.statusCode+" "+(length||"-")+" "+(timeSpent / 1000).toString());
-}
+};
+
+// Merge 2 objects
 var _merge = function(a,b){
 	var o = {};
 	if ( a != null ) {
@@ -708,6 +709,8 @@ var _merge = function(a,b){
 	}
 	return o;
 };
+
+// Asyncronous if
 var _if = function(c,a,b) {
 	return c ? a(b) : b();
 };

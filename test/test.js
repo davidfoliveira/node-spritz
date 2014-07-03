@@ -1,5 +1,5 @@
 var
-	spritz = require('../lib/spritz');
+	spritz = require('../spritz');
 
 // Start
 spritz.start({port:8090,processes:(require('os').cpus().length)});

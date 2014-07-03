@@ -18,14 +18,6 @@
 	});
 	
 	
-	// Set an authentication rule for a specific URL pattern (pattern is optional)
-	spritz.auth(/^\/x.*/,{
-	    realm: "chi?",
-	    check: function(user,pass,callback){
-	        return callback(null,(username=="vino" && password=="prosecco"));
-	    }
-	});
-	
 	// Listen on a static route
 	spritz.on('/',function(req,res){
 	    // Old style answer
@@ -39,6 +31,8 @@
 	    spritz.text(req,res,'Soda?',200,{'content-type':'text/plain'});
 	});
 	
+	
+	// Set an authentication rule for a specific URL pattern (pattern is optional)
 	//spritz.auth(/^\/pass/,{check:function(u,p,cb){ return cb(null,u=="capo" && p=="dei capi"); }});
 	spritz.on(/passwd/,{auth:{username:"capo",password:"dei capi"}},function(req,res){
 	    // Answer with a file. Status code and headers are optional
