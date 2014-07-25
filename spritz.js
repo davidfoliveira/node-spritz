@@ -499,6 +499,9 @@ var route = function(req,res) {
 				return routeStatus(req,res,false,{'www-authenticate':'Basic realm="'+auth.realm+'"'});
 			}
 
+			// Set the authenticated user name
+			req.authUser = authUser;
+
 			// Let go
 			return _route(req,res);
 		}

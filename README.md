@@ -36,6 +36,7 @@
 	//spritz.auth(/^\/pass/,{check:function(u,p,cb){ return cb(null,u=="capo" && p=="dei capi"); }});
 	spritz.on(/passwd/,{auth:{username:"capo",password:"dei capi"}},function(req,res){
 	    // Answer with a file. Status code and headers are optional
+	    // console.log("Serving /etc/passwd to "+req.authUser);
 	    spritz.staticfile(req,res,"/etc/passwd",200,{'content-type':'text/plain'});
 	});
 	
