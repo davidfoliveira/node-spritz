@@ -26,7 +26,8 @@
 	});
 	
 	// Listen on a RegExp based url pattern.
-	spritz.on(/^\/x/,function(req,res){
+	spritz.on(/^\/(x.*)/,function(req,res){
+            // console.log("User asked for ",RegExp.$1);
 	    // Answer with a text. Status code and headers are optional
 	    spritz.text(req,res,'Soda?',200,{'content-type':'text/plain'});
 	});

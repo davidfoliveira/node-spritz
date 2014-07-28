@@ -513,7 +513,8 @@ var route = function(req,res) {
 var _route = function(req,res) {
 
 	var
-		routeOpts;
+		routeOpts,
+		matchedRoute;
 
 	// String routes
 	if ( routes[req.method+" ! "+req.url] != null ) {
@@ -524,6 +525,7 @@ var _route = function(req,res) {
 	else {
 		for ( var x = 0 ; x < rxRoutes.length ; x++ ) {
 			if ( req.url.match(rxRoutes[x][0]) && rxRoutes[x][1].method.toUpperCase() == req.method ) {
+				matchedRoute = rxRoutes[x][0];
 				routeOpts = rxRoutes[x][1];
 				break;
 			}
@@ -544,6 +546,10 @@ var _route = function(req,res) {
 		function(err){
 			if ( err )
 				_log_error("Error reading request POST data: ",err);
+
+			// Set the RegExp object
+			if ( matchedRoute )
+				req.url.match(rxRoutes[x][0]);
 
 			// Call the route handler
 			return routeOpts.handler(req,res);

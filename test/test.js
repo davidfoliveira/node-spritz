@@ -9,7 +9,8 @@ spritz.on('/',function(req,res){
 	res.writeHead(200,{});
 	res.end('Aperol o Campari?');
 });
-spritz.on(/^\/x/,function(req,res){
+spritz.on(/^\/(x.*)/,function(req,res){
+	console.log("User asked for ",RegExp.$1);
 	spritz.text(req,res,'Soda?');
 });
 
