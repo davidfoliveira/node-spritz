@@ -3,25 +3,27 @@
 /*
   Spritz Web server framework - based on web module for SAPO Meta/Cache
 
-  Version: 0.1
+  Version: 0.3
   Author: David Oliveira <d.oliveira@prozone.org>
+  Changed: Ricardo Malta <ricardo.malta@sapo.pt>
  */
 
 var
-	fs		= require('fs'),
+	fs			= require('fs'),
 	cluster		= require('cluster'),
 	http		= require('http'),
 	https		= require('https'),
-	qs		= require('querystring'),
+	qs			= require('querystring'),
 	formidable	= require('formidable'),
+	consolidate = require('consolidate'),
 
-	reqSeq		= 0,
-	routes		= {},
-	rxRoutes	= [],
+	reqSeq			= 0,
+	routes			= {},
+	rxRoutes		= [],
 	statusRoutes	= {},
-	authRules	= [],
+	authRules		= [],
 	templEngines	= {},
-	self		= exports;
+	self			= exports;
 
 
 // Start
@@ -48,6 +50,14 @@ exports.start = function(opts,handler){
 		opts.mimes = { 'html': 'text/html', 'htm': 'text/html', 'js': 'text/javascript', 'css': 'text/css', 'gif': 'image/gif', 'jpg': 'image/jpeg', 'png': 'image/png' }; 
 	if ( !opts.processes )
 		opts.processes = 1;
+
+	if( opts.templateEngine )
+		self.templateEngine = opts.templateEngine;
+
+	self.templatePath = opts.templatePath ? opts.templatePath : "views";
+
+	if( !opts.templatePath.match(/\/$/))
+		self.templatePath += "/";
 
 	_log_info("Starting...");
 	// Cluster support
@@ -623,41 +633,36 @@ var buildAuthRule = function(pattern,auth) {
 };
 
 
-/*
+
 exports.template = function(req,res,filename,args,status,headers){
 
-	var
-		Template = require('tt2').Template,
-		template = new Template({
-			INCLUDE_PATH: "view",
-			FILTERS: {
-				JSON:		JSON.stringify,
-				JSONSIMPLE:	function(data) { return JSON.stringify(data).replace(/"(\w+)":/g,"$1:") },
-				number:		function(data) { return data.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ") }
-			}
-		});
+	if( !self.templateEngine ){
+		res.writeHead(500,{'content-type':'text/html; charset=utf-8'});
+		return res.end("Error: No template engine defined!");
+	}
 
-//	_log_info("Serving result of template "+filename+".tt");
-	template.process(filename+".tt",args,function(err,output){
-		if ( err ) {
+	if( !(self.templateEngine in consolidate) ){
+		res.writeHead(500,{'content-type':'text/html; charset=utf-8'});
+		return res.end("Error: Invalid or not installed template engine \""+ self.templateEngine +"\"");
+	}
+
+	consolidate[ self.templateEngine ]( self.templatePath + filename, args, function(err, html){
+
+		if( err ){
 			res.writeHead(500,{'content-type':'text/html; charset=utf-8'});
-			return res.end("Error: "+JSON.stringify(err));
-		}
-		if ( output == null ) {
-			res.writeHead(500,{'content-type':'text/html; charset=utf-8'});
-			return res.end("Error: "+JSON.stringify(err));
+			return res.end("Error: "+err);
 		}
 
 		var
-			length = Buffer.byteLength(output,'utf8');
+			length = Buffer.byteLength(html,'utf8');
 
-		// Send the output
+		// Send the html
 		res.statusCode = status || 200;
 		res.writeHead(res.statusCode,_merge({
 			'content-type':		'text/html; charset=utf-8',
 			'content-length':	length
 		},headers));
-		res.end(output);
+		res.end(html);
 
 		// Log
 		_access_log(req,res,length);
@@ -665,9 +670,7 @@ exports.template = function(req,res,filename,args,status,headers){
 		// Report status
 		return routeStatus(req,res,true);
 	});
-
 };
-*/
 
 // Logging functions
 var _log_info = function() {

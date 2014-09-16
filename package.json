@@ -2,7 +2,7 @@
   "author": "David Oliveira <d.oliveira@prozone.org>",
   "name": "spritz",
   "description": "A pretty simple web server framework",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/davidfoliveira/node-spritz/"
@@ -10,7 +10,8 @@
   "main": "./spritz.js",
   "bin": { },
   "dependencies": {
-    "formidable":">=1.0.15"
+    "formidable":">=1.0.15",
+    "consolidate": "~0.10.0"
   },
   "devDependencies": {},
   "optionalDependencies": {},
