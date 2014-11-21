@@ -312,14 +312,15 @@ exports.startServer = function(opts,handler){
 		},args.shift()||{});
 
 		// Authentication option on the route will be registered on the authRules list
-		if ( opts.auth ) {
-			// We have to convert the auth into an object so we can set the method
-			if ( typeof opts.auth == "function" )
-				opts.auth = { check: opts.auth };
-			opts.auth.method = opts.method;
-
+		if ( typeof opts.auth != "undefined" ) {
 			// Add to the authentication rules
-			authRules.push(buildAuthRule(r,opts.auth));
+			authRules.push(buildAuthRule(r,opts.auth,opts.method));
+		}
+
+		// Cache option on the route will be registered on the cacheRules list
+		if ( opts.cache ) {
+			// Add to the cache rules
+			cacheRules.push(buildCacheRule(r,opts.cache,opts.method));
 		}
 
 		// Register the route on the right list
@@ -340,8 +341,8 @@ exports.startServer = function(opts,handler){
 			args = Array.prototype.slice.call(arguments, 0);
 
 		// Get the arguments
-		opts = args.pop();
-		r = args.shift();
+		opts	= args.pop();
+		r		= args.shift();
 
 		// Add to the authentication rules
 		authRules.push(buildAuthRule(r,opts));
@@ -384,8 +385,8 @@ var handleRequest = function(req,res) {
 
 	// Request arguments
 	req.args = {};
+    req.originalURL = req.url;
 	if ( req.url.match(/^(.*?)\?(.*)$/) ) {
-		req.originalURL = req.url;
 		req.url = RegExp.$1;
 		req.urlNoArgs = RegExp.$1;
 		req.args = qs.parse(RegExp.$2);
@@ -459,7 +460,7 @@ var route = function(req,res) {
 		authUser = '',
 		authPass = '';
 
-	// Check for a matching authorization rule
+    // Find for a matching authorization rule
 	for ( var x = 0 ; x < authRules.length; x++ ) {
 		var rule = authRules[x];
 		if ( req.url.match(rule.pattern) && (!rule.method || req.method == rule.method) ) {
@@ -467,6 +468,8 @@ var route = function(req,res) {
 			break;
 		}
 	}
+	if ( auth && !auth.check )
+		auth = null;
 
 	// Authenticate
 	return _if ( auth,
@@ -583,9 +586,9 @@ var routeStatus = function(req,res,alreadyServed,headers) {
 
 	// No.. default status handler
 	ans =	(res.statusCode == 404) ? { error: 'No route for this request type' } :
-		(res.statusCode == 401) ? { warn:  'Authentication required' } :
-		(res.statusCode >= 400) ? { error: 'Got error '+res.statusCode } :
-					  { info:  'Returning status '+res.statusCode };
+		(res.statusCode == 401) ?	{ warn:  'Authentication required' } :
+		(res.statusCode >= 400) ?	{ error: 'Got error '+res.statusCode } :
+									{ info:  'Returning status '+res.statusCode };
 
 	// Something to answer? Answer..!
 	if ( ans && !alreadyServed )
@@ -594,31 +597,34 @@ var routeStatus = function(req,res,alreadyServed,headers) {
 };
 
 
-var buildAuthRule = function(pattern,auth) {
+// Build an authentication rule based on the authentication options
+var buildAuthRule = function(pattern,authOpts,method) {
+	if ( authOpts == null )
+		authOpts = { check: null };
 
 	// Auth is a function, put her on the right place
-	if ( typeof(auth) == "function" )
-		auth = { check: auth };
+	if ( typeof(authOpts) == "function" )
+		authOpts = { check: authOpts };
 
 	// No realm? Set a default one
-	if ( !auth.realm )
-		auth.real = 'Authentication required';
+	if ( !authOpts.realm )
+		authOpts.real = 'Authentication required';
 
 	// Didn't specify a check function but specified a username and password, build the function
-	if ( !auth.check && auth.username && auth.password ) {
-		auth.check = function(u,p,callback){
-			return callback(null,(u == auth.username && p == auth.password));
+	if ( !authOpts.check && authOpts.username && authOpts.password ) {
+		authOpts.check = function(u,p,callback){
+			return callback(null,(u == authOpts.username && p == authOpts.password));
 		};
 	}
 
 	// Has a URL pattern ? If no.. default
-	auth.pattern = (pattern || /.*/);
+	authOpts.pattern = (pattern || /.*/);
 
 	// Has a method ? Yes.. make sure it's uppercase
-	if ( auth.method )
-		auth.method = auth.method.toUpperCase();
+	if ( authOpts.method || authOpts.method )
+		authOpts.method = (method || authOpts.method).toUpperCase();
 
-	return auth;
+	return authOpts;
 
 };
 
