@@ -542,7 +542,7 @@ var _route = function(req,res) {
 	}
 
 	// Read POST data ?
-	_if ( !routeOpts.dontReadPOSTData,
+	_if ( !routeOpts.dontreadpostdata,
 		function(next){
 			readPOSTData(req,next);
 		},
