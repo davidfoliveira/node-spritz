@@ -3,25 +3,27 @@
 /*
   Spritz Web server framework - based on web module for SAPO Meta/Cache
 
-  Version: 0.1
+  Version: 0.4.0
   Author: David Oliveira <d.oliveira@prozone.org>
  */
 
 var
-	fs		= require('fs'),
-	cluster		= require('cluster'),
-	http		= require('http'),
-	https		= require('https'),
-	qs		= require('querystring'),
-	formidable	= require('formidable'),
+	fs				= require('fs'),
+	cluster			= require('cluster'),
+	http			= require('http'),
+	https			= require('https'),
+	qs				= require('querystring'),
+	formidable		= require('formidable'),
 
-	reqSeq		= 0,
-	routes		= {},
-	rxRoutes	= [],
+	reqSeq			= 0,
+	routes			= {},
+	rxRoutes		= [],
 	statusRoutes	= {},
-	authRules	= [],
+	authRules		= [],
+	cacheRules		= [],
 	templEngines	= {},
-	self		= exports;
+	objCache		= {},
+	self			= exports;
 
 
 // Start
@@ -91,13 +93,13 @@ exports.start = function(opts,handler){
 
 // Stop
 exports.stop = function(handler){
-
 	_log_info("Stopping...");
+	self._server = null;
 };
 
 
 // Send a static file
-exports.staticfile = function(req,res,filename,status,headers) {
+exports.staticfile = function(req,res,filename,status,headers,callback) {
 
 	var
 		ext = "unknown";
@@ -116,26 +118,44 @@ exports.staticfile = function(req,res,filename,status,headers) {
 		if ( err ) {
 			if ( err.code == "ENOENT" ) {
 				res.statusCode = 404;
+				callback(err,null);
 				return routeStatus(req,res,false);
 			}
 			res.writeHead(500,'Internal server error');
 			res.end('Internal server error: '+JSON.stringify(err));
+			callback(err,null);
 			return _access_log(req,res,length);
 		}
 
 		var
-			expires = new Date();
+			expires = new Date(),
+			_headers = _merge({
+				'content-type':		(self._opts.mimes[ext] || 'text/plain'),
+				'content-length':	stat.size,
+				'date':				new Date().toUTCString()
+			},headers,true);
 
 		// Send
 		res.statusCode = status || 200;
-		res.writeHead(res.statusCode, _merge({
-			'content-type':		(self._opts.mimes[ext] || 'text/plain'),
-			'content-length':	stat.size,
-			'date':			new Date().toUTCString()
-		},headers));
+		res.writeHead(res.statusCode,_headers);
+
+		// Set the cache entry
+		if ( req.cacheKey ) {
+			objCache[req.cacheKey] = {
+				status:		res.statusCode,
+				headers:	headers,
+				stat:		stat,
+				file:		filename
+			};
+		}
 
 		// Send file
- 		fs.createReadStream(filename).pipe(res);
+ 		var pr = fs.createReadStream(filename).pipe(res);
+		if ( callback ) {
+			pr.on('end',function(){
+				callback(null,true);
+			});
+		}
 		_access_log(req,res,stat.size);
 
 		// Report status
@@ -143,31 +163,52 @@ exports.staticfile = function(req,res,filename,status,headers) {
 	});
 
 };
+exports.file = exports.staticfile;
 
-exports.text = function(req,res,content,status,headers) {
+exports.text = function(req,res,content,status,headers,callback) {
 
 	var
-		length =  Buffer.byteLength(content,'utf8');
+		length = Buffer.byteLength(content,'utf8'),
+		_headers = _merge({
+			'content-type':		'text/plain; charset=utf-8',
+			'content-length':	length,
+			'date':				new Date().toUTCString()
+		},headers,true);
 
+	// Set the status code and send data
 	res.statusCode = status || 200;
-	res.writeHead(res.statusCode, _merge({
-		'content-type':		'text/plain; charset=utf-8',
-		'content-length':	length,
-		'date':			new Date().toUTCString()
-	},headers));
+	res.writeHead(res.statusCode,_headers);
 	res.end(content);
+
+	// Request has a cache key? We need to cache it
+	if ( req.cacheKey ) {
+		objCache[req.cacheKey] = {
+			status:		res.statusCode,
+			headers:	_headers,
+			content:	content,
+			length:		length
+		};
+	}
 	_access_log(req,res,length);
 
 	// Report status
-	return routeStatus(req,res,true);
+	routeStatus(req,res,true);
+
+	// Call the callback
+	if ( callback )
+		callback(null,true);
 
 };
 
-exports.json = function(req,res,content,status,headers,pretty) {
+exports.json = function(req,res,content,status,headers,pretty,callback) {
 
 	var
 		strfyArgs = [content];
 
+	if ( pretty && typeof pretty == "function" ) {
+		callback = pretty;
+		pretty = false;
+	}
 	if ( pretty )
 		strfyArgs.push(null,4);
 
@@ -176,27 +217,33 @@ exports.json = function(req,res,content,status,headers,pretty) {
 
 	// JSONP ?
 	if ( req.args.callback )
-		content = req.args.callback.toString() + "(" + content + ");";
+		content = req.args.callback.toString() + "(" + content.replace(/[\u00a0\u2000-\u203f]/g,"") + ");";
 
-	return this.text(req,res,content,status,_merge({"content-type":"application/json; charset=utf-8"},headers));
+	// Send the data
+	this.text(req,res,content,status,_merge({"content-type":"application/json; charset=utf-8"},headers,true));
+
+	// Call the callback
+	if ( callback )
+		callback(null,true);
 
 };
 
-exports.proxy = function(req,res,hostOrURL,port,opts){
+exports.proxy = function(req,res,hostOrURL,port,opts,callback){
 
 	var
 		args = Array.prototype.slice.call(arguments, 0),
 		url,
 		timeout,
 		fired = false,
+		docSize = 0,
 		_opts = {};
 
 	// Get the arguments
-	req = args.shift();
-	res = args.shift();
-	hostOrURL = args.shift();
-	opts = args.pop();
-	port = args.shift();
+	req			= args.shift();
+	res			= args.shift();
+	hostOrURL	= args.shift();
+	opts		= args.pop();
+	port		= args.shift();
 
 	// What url ?
 	url = (req.url === req.urlNoArgs) ? req.originalURL : req.url;
@@ -208,7 +255,7 @@ exports.proxy = function(req,res,hostOrURL,port,opts){
 		port:    port,
 		path:    url,
 		headers: req.headers || {}
-	},opts||{});
+	},opts||{},true);
 
 	// Trying to proxy a POST request with already read POST data ?
 	if ( req.method == "POST" && req._readPOSTData ) {
@@ -271,14 +318,50 @@ exports.proxy = function(req,res,hostOrURL,port,opts){
 		if ( timeout )
 			clearTimeout(timeout);
 		res.writeHead(pres.statusCode, pres.headers);
-		pres.pipe(res);
-		_access_log(req,res,pres.headers['content-length']||'??');
+
+		if ( typeof opts.outputFilter == "function" ) {
+			var allData = null;
+			pres.on('data',function(data){
+				var newB = new Buffer(((allData != null)?allData.length:0)+data.length);
+				if ( allData != null )
+					allData.copy(newB,0,0,allData.length);
+				data.copy(newB,(allData != null)?allData.length:0,0,data.length);
+				allData = newB;
+			});
+			pres.on('end',function(){
+				var d = opts.outputFilter(allData,req,res,preq,pres);
+				if ( d == null )
+					d = allData;
+				docSize = d.length;
+				res.write(d);
+				res.end();
+
+				// Run the callback
+				if ( callback )
+					callback(null,true);
+
+				// Log
+				_access_log(req,res,pres.headers['content-length']||docSize||'??');
+			});
+		}
+		else {
+			var pr = pres.pipe(res);
+			pr.on('end',function(){
+				// Run the callback
+				if ( callback )
+					callback(null,true);
+
+				// Log
+				_access_log(req,res,pres.headers['content-length']||docSize||'??');
+			});
+		}
 	});
 	preq.on('error',function(e){
 		if ( _opts.onError )
 			return _opts.onError(e);
 		res.writeHead(503,{'content-type':'text/plain; charset=UTF-8'});
 		res.end('503 - Gateway error: '+e.toString());
+		req.abort();
 		_access_log(req,res,19);
 	});
 	if ( req.headers && req.headers['content-length'] )
@@ -307,7 +390,7 @@ exports.startServer = function(opts,handler){
 
 		// Merge options with the defaults
 		opts = _merge({
-			method: "GET",
+//			method: "GET",
 			handler: reqHandler
 		},args.shift()||{});
 
@@ -327,7 +410,7 @@ exports.startServer = function(opts,handler){
 		if ( r instanceof RegExp )
 			rxRoutes.push([r,opts]);
 		else if ( typeof r == "string" )
-			routes[opts.method.toUpperCase()+" ! "+r] = opts;
+			routes[(opts.method?opts.method.toUpperCase()+" ! ":"")+r] = opts;
 		else if ( typeof r == "number" )
 			statusRoutes[r.toString()] = opts;
 		else
@@ -348,8 +431,22 @@ exports.startServer = function(opts,handler){
 		authRules.push(buildAuthRule(r,opts));
 	};
 
+	// Cache
+	self.cache = function(r,opts){
+		var
+			args = Array.prototype.slice.call(arguments, 0);
+
+		// Get the arguments
+		opts	= args.pop() || true;
+		r		= args.shift();
+
+		// Add to the cache rules
+		cacheRules.push(buildCacheRule(r,opts));
+	};
+
 	// Start server
-	self._server = http.createServer(function(req,res) {
+	var iface = (opts.interface == 'fastcgi') ? require('fastcgi-server') : http;
+	self._server = iface.createServer(function(req,res) {
 		handleRequest(req,res);
 	});
 	if ( opts.port ) {
@@ -458,7 +555,8 @@ var route = function(req,res) {
 	var
 		auth,
 		authUser = '',
-		authPass = '';
+		authPass = '',
+		cache;
 
     // Find for a matching authorization rule
 	for ( var x = 0 ; x < authRules.length; x++ ) {
@@ -470,6 +568,15 @@ var route = function(req,res) {
 	}
 	if ( auth && !auth.check )
 		auth = null;
+
+	// Find for a matching cache rule
+	for ( var x = 0 ; x < cacheRules.length; x++ ) {
+		var rule = cacheRules[x];
+		if ( req.url.match(rule.pattern) && (!rule.method || req.method == rule.method) ) {
+			cache = rule;
+			break;
+		}
+	}
 
 	// Authenticate
 	return _if ( auth,
@@ -505,10 +612,42 @@ var route = function(req,res) {
 			// Set the authenticated user name
 			req.authUser = authUser;
 
+			// Check cache
+			if ( cache ) {
+				req.cacheKey = cache.keyGenerator(req,res);
+				req.cacheRule = cache;
+				if ( req.cacheKey && objCache[req.cacheKey] && _sendCached(req,res,objCache[req.cacheKey]) )
+					return;
+			}
+
 			// Let go
 			return _route(req,res);
 		}
 	);
+
+};
+
+// Return the cache data
+var _sendCached = function(req,res,cacheObj) {
+
+	// Write the head
+	res.writeHead(cacheObj.status,cacheObj.headers);
+
+	// Pipe content from a file
+	if ( cacheObj.file ) {
+ 		fs.createReadStream(cacheObj.file).pipe(res);
+		_access_log(req,res,stat.size,true);
+	}
+	// Write content
+	else if ( cacheObj.content != null ) {
+		res.end(cacheObj.content);
+		_access_log(req,res,cacheObj.length,true);
+	}
+	// Serve it.. but not from cache
+	else
+		return false;
+
+	return true;
 
 };
 
@@ -522,6 +661,9 @@ var _route = function(req,res) {
 	// String routes
 	if ( routes[req.method+" ! "+req.url] != null ) {
 		routeOpts = routes[req.method+" ! "+req.url];
+	}
+	else if ( routes[req.url] ) {
+		routeOpts = routes[req.url];
 	}
 
 	// RegExp routes
@@ -542,7 +684,7 @@ var _route = function(req,res) {
 	}
 
 	// Read POST data ?
-	_if ( !routeOpts.dontreadpostdata,
+	_if ( !routeOpts.dontReadPOSTData,
 		function(next){
 			readPOSTData(req,next);
 		},
@@ -596,14 +738,14 @@ var routeStatus = function(req,res,alreadyServed,headers) {
 
 };
 
-
 // Build an authentication rule based on the authentication options
 var buildAuthRule = function(pattern,authOpts,method) {
+
 	if ( authOpts == null )
 		authOpts = { check: null };
 
 	// Auth is a function, put her on the right place
-	if ( typeof(authOpts) == "function" )
+	if ( typeof(auth) == "function" )
 		authOpts = { check: authOpts };
 
 	// No realm? Set a default one
@@ -628,6 +770,34 @@ var buildAuthRule = function(pattern,authOpts,method) {
 
 };
 
+// Build a cache rule based on the cache options
+var buildCacheRule = function(pattern,cacheOpts,method) {
+
+	// Cache is a function, put her on the right place
+	if ( typeof cacheOpts == "function" )
+		cacheOpts = { keyGenerator: cacheOpts };
+	else if ( typeof cacheOpts == "boolean" )
+		cacheOpts = { keyGenerator: cacheOpts ? function(req,res){return req.originalURL;} : null };
+	else if ( typeof cacheOpts == "number" )
+		cacheOpts = { expireIn: cacheOpts };
+	else
+		throw new Error("Unknown/Unsupported cache settings: ",cacheOpts);
+
+	if ( !cacheOpts.keyGenerator )
+		cacheOpts.keyGenerator = function(req,res){return req.originalURL;};
+	if ( !cacheOpts.expireIn )
+		cacheOpts.expireIn = 60;	// 1 minute
+
+	// Has a URL pattern ? If no.. default
+	cacheOpts.pattern = (pattern || /.*/);
+
+	// Has a method ? Yes.. make sure it's uppercase
+	if ( method || cacheOpts.method )
+		cacheOpts.method = (method || cacheOpts.method).toUpperCase();
+
+	return cacheOpts;
+
+};
 
 /*
 exports.template = function(req,res,filename,args,status,headers){
@@ -662,7 +832,7 @@ exports.template = function(req,res,filename,args,status,headers){
 		res.writeHead(res.statusCode,_merge({
 			'content-type':		'text/html; charset=utf-8',
 			'content-length':	length
-		},headers));
+		},headers,true));
 		res.end(output);
 
 		// Log
@@ -717,15 +887,15 @@ var _access_log = function(req,res,length) {
 };
 
 // Merge 2 objects
-var _merge = function(a,b){
+var _merge = function(a,b,lcProps){
 	var o = {};
 	if ( a != null ) {
 		for ( var p in a )
-			o[p.toLowerCase()] = a[p];
+			o[lcProps?p.toLowerCase():p] = a[p];
 	}
 	if ( b != null ) {
 		for ( var p in b )
-			o[p.toLowerCase()] = b[p];
+			o[lcProps?p.toLowerCase():p] = b[p];
 	}
 	return o;
 };
