@@ -1,35 +1,53 @@
 "use strict";
 
-/*
-  Spritz Web server framework - based on web module for SAPO Meta/Cache
-
-  Version: 0.4.0
-  Author: David Oliveira <d.oliveira@prozone.org>
- */
-
 var
-	fs				= require('fs'),
-	cluster			= require('cluster'),
-	http			= require('http'),
-	https			= require('https'),
-	qs				= require('querystring'),
-	formidable		= require('formidable'),
-
-	reqSeq			= 0,
-	routes			= {},
-	rxRoutes		= [],
-	statusRoutes	= {},
-	authRules		= [],
-	cacheRules		= [],
-	templEngines	= {},
-	objCache		= {},
-	self			= exports;
+	fs			= require('fs'),
+	http		= require('http'),
+	https		= require('https'),
+	cluster 	= require('cluster'),
+	qs			= require('querystring'),
+	formidable	= require('formidable'),
+	modules		= require('./modules');
 
 
-// Start
+// Our data
+exports.routes			= {};
+exports.rxRoutes		= [];
+exports.statusRoutes	= {};
+exports.reqSeq			= 0;
+
+
+
+// Create a new server instance
+exports.newServer = function(){
+
+	var
+		self = this,
+		newServer;
+
+	// Clone the current object
+	newServer = _merge(exports,{});
+
+	// Reset some data
+	newServer.routes		= {};
+	newServer.rxRoutes		= [];
+	newServer.statusRoutes	= {};
+	newServer.reqSeq		= 0;
+
+	// Delete newServer()
+	delete newServer.newServer;
+
+	// Return it
+	return newServer;
+
+};
+
+
+// Start the server
 exports.start = function(opts,handler){
 
 	var
+		self = this,
 		args = Array.prototype.slice.call(arguments, 0),
 		numProcs,
 		workers = [];
@@ -52,6 +70,7 @@ exports.start = function(opts,handler){
 		opts.processes = 1;
 
 	_log_info("Starting...");
+
 	// Cluster support
 	numProcs = (opts.processes || 1);
 	if ( numProcs > 1 ) {
@@ -78,96 +97,257 @@ exports.start = function(opts,handler){
 
 			// Some fake methods
 			self.on = function(){};
-			self.auth = function(){};
 		}
 		else {
 			process.title = "Spritz child process";
-			return self.startServer(opts,handler);
+			return _startServer(self,opts,handler);
 		}
 	}
 	else
-		return self.startServer(opts,handler);
+		return _startServer(self,opts,handler);
 
 };
 
-
-// Stop
-exports.stop = function(handler){
-	_log_info("Stopping...");
-	self._server = null;
-};
-
-
-// Send a static file
-exports.staticfile = function(req,res,filename,status,headers,callback) {
+// Start the HTTP server
+var _startServer = function(self,opts,handler){
 
 	var
-		ext = "unknown";
+		iface,
+		_handleRequest = function(req,res){
+			handleRequest(self,req,res);
+		};
 
-	// Remove unsafe stuff
-	filename = filename.replace(/\.\./,"").replace(/\/+/,"/");
-	// He's asking for a directory? We don't serve directories..
-	if ( filename.match(/\/$/) )
-		filename += "index.html";
-	// Get the extension for sending the propper mime type
-	if ( filename.match(/\.(\w+)$/) )
-		ext = RegExp.$1;
-
-//	_log_info("Serving static file "+filename);
-	fs.stat(filename, function(err, stat) {
-		if ( err ) {
-			if ( err.code == "ENOENT" ) {
-				res.statusCode = 404;
-				callback(err,null);
-				return routeStatus(req,res,false);
-			}
-			res.writeHead(500,'Internal server error');
-			res.end('Internal server error: '+JSON.stringify(err));
-			callback(err,null);
-			return _access_log(req,res,length);
-		}
-
+	// Our router
+	self.on = function(r,opts,reqHandler){
 		var
-			expires = new Date(),
-			_headers = _merge({
-				'content-type':		(self._opts.mimes[ext] || 'text/plain'),
-				'content-length':	stat.size,
-				'date':				new Date().toUTCString()
-			},headers,true);
+			args = Array.prototype.slice.call(arguments, 0);
 
-		// Send
-		res.statusCode = status || 200;
-		res.writeHead(res.statusCode,_headers);
+		// Get arguments
+		r = args.shift();
+		reqHandler = args.pop();
 
-		// Set the cache entry
-		if ( req.cacheKey ) {
-			objCache[req.cacheKey] = {
-				status:		res.statusCode,
-				headers:	headers,
-				stat:		stat,
-				file:		filename
-			};
-		}
+		// Merge options with the defaults
+		opts = _merge({
+//			method: "GET",
+			handler: reqHandler
+		},args.shift()||{});
 
-		// Send file
- 		var pr = fs.createReadStream(filename).pipe(res);
-		if ( callback ) {
-			pr.on('end',function(){
-				callback(null,true);
-			});
-		}
-		_access_log(req,res,stat.size);
+		// Register the route on the right list
+		if ( r instanceof RegExp )
+			self.rxRoutes.push([r,opts]);
+		else if ( typeof r == "string" )
+			self.routes[(opts.method?opts.method.toUpperCase()+" ! ":"")+r] = opts;
+		else if ( typeof r == "number" )
+			self.statusRoutes[r.toString()] = opts;
+		else
+			throw new Error("Don't know what to do with route '"+r+"'");
+	};
 
-		// Report status
-		return routeStatus(req,res,true);
-	});
+	// Create the server
+	iface = (opts.proto == 'fastcgi')	? require('fastcgi-server') :
+			(opts.proto == 'https')		? https	:
+			http;
+	self._server =	(opts.proto == "https")		? https.createServer(opts,_handleRequest) :
+					(opts.proto == "fastcgi")	? require('fastcgi-server').createServer(_handleRequest) :
+					http.createServer(_handleRequest);
+
+	// Listen
+	if ( opts.port == null )
+		opts.port = (opts.proto == "https") ? 443 : 8080;
+	if ( opts.port ) {
+		self._server.listen(opts.port || 8080,opts.address || "0.0.0.0");
+		_log_info("Listening on "+(opts.address || "0.0.0.0")+":"+opts.port);
+	}
+	else if ( opts.address && opts.address.match(/\//) ) {
+		self._server.listen(opts.address);
+		_log_info("Listening on "+opts.address+" UNIX domain socket");
+	}
+	else {
+		_log_warn("Don't know how to listen");
+	}
 
 };
-exports.file = exports.staticfile;
 
+// Handle a request
+var handleRequest = function(self,req,res) {
+
+	var
+		now = new Date();
+
+	// Request related values
+	req._cType = req.headers['content-type'] ? req.headers['content-type'].toString().replace(/;.*/g,"") : "unknown/unknown";
+	req.xRequestID = (self.reqSeq++) + "-" + process.pid.toString() + "-" + now.getYear()+now.getMonth()+now.getDay()+now.getHours()+now.getMinutes();
+	req.xConnectDate = now;
+	req.xRemoteAddr = req.connection.remoteAddress || ((req.client && req.client._peername) ? req.client._peername.address : "0.0.0.0");
+	if ( req.xRemoteAddr == "127.0.0.1" && req.headers['x-forwarded-for'] && req.headers['x-forwarded-for'].match(/^(\d{1,3}\.){3}\d{1,3}$/) ) {
+		req.xDirectRemoteAddr = req.xRemoteAddr;
+		req.xRemoteAddr = req.headers['x-forwarded-for'];
+	}
+
+	// Request arguments
+	req.args = {};
+    req.originalURL = req.url;
+	if ( req.url.match(/^(.*?)\?(.*)$/) ) {
+		req.url = RegExp.$1;
+		req.urlNoArgs = RegExp.$1;
+		req.args = qs.parse(RegExp.$2);
+	}
+
+	// POST data reader
+	if ( req.method == "POST" ) {
+		req.readPOSTData = function(cb){
+			return readPOSTData(req,function(err){
+				return cb(err,req.POSTdata);
+			});
+		};
+	}
+
+	// Route request
+	return route(self,req,res);
+
+};
+
+// Read data from POST and parse it
+var readPOSTData = function(req,handler) {
+
+	// POST data already read, don't do it again
+	if ( req._readPOSTData )
+		return handler(null,req);
+	req._readPOSTData = true;
+
+	// multipart/form-data or just a regular urlencoded form?
+	if ( req._cType.match(/^multipart\/form\-data/) ) {
+		try {
+			var
+				form = new formidable.IncomingForm();
+
+			form.parse(req,function(err,args,files){
+				if ( err )
+					return handler(err,false);
+
+				req.POSTargs = args;
+				req.POSTfiles = files;
+				return handler(null,req);
+			});
+		}
+		catch(ex) {
+			return handler(ex,null);
+		}
+	}
+	else {
+		req.setEncoding("utf-8");
+		var buf = "";
+		req.on('data',function(chunk){ buf += chunk; });
+		req.on('end',function(){
+			if ( req._cType == "application/json" ) {
+				try { req.POSTjson = JSON.parse(buf); } catch(ex){ _log_error("Error parsing POST JSON: ",ex); }
+			}
+			else {
+				req.POSTargs = qs.parse(buf);
+				if ( req.POSTargs['json'] )
+					try { req.POSTjson = JSON.parse(req.POSTargs['json']); } catch(ex){  _log_error("Error parsing POST JSON: ",ex); }
+			}
+			return handler(null,req);
+		});
+	}
+
+};
+
+
+// Route a request
+var route = function(self,req,res) {
+
+	var
+		routeOpts,
+		matchedRoute;
+
+	// String routes
+	if ( self.routes[req.method+" ! "+req.url] != null ) {
+		routeOpts = self.routes[req.method+" ! "+req.url];
+	}
+	else if ( self.routes[req.url] ) {
+		routeOpts = self.routes[req.url];
+	}
+
+	// RegExp routes
+	else {
+		for ( var x = 0 ; x < self.rxRoutes.length ; x++ ) {
+			if ( req.url.match(self.rxRoutes[x][0]) && self.rxRoutes[x][1].method.toUpperCase() == req.method ) {
+				matchedRoute = self.rxRoutes[x][0];
+				routeOpts = self.rxRoutes[x][1];
+				break;
+			}
+		}
+	}
+
+	// Still no handler? 404...
+	if ( !routeOpts ) {
+		res.statusCode = 404;
+		return routeStatus(self,req,res,false);
+	}
+
+	// Read POST data ?
+	_if ( !routeOpts.dontReadPOSTData,
+		function(next){
+			readPOSTData(req,next);
+		},
+		function(err){
+			if ( err )
+				_log_error("Error reading request POST data: ",err);
+
+			// Set the RegExp object
+			if ( matchedRoute )
+				req.url.match(self.rxRoutes[x][0]);
+
+			// Call the route handler
+			return routeOpts.handler(req,res);
+		}
+	);
+
+};
+
+
+// Route a status occurrence
+var routeStatus = function(self,req,res,alreadyServed,headers) {
+
+	var
+		ans;
+
+	// Inside a status route handler ?
+	if ( req.onStatusRouteH )
+		return;
+
+	// Already served ? Mark it on request, so future route handlers can take this in consideration
+	req.served = alreadyServed;
+
+	// Do we have a status handler ?
+	if ( self.statusRoutes[res.statusCode.toString()] ) {
+		req.onStatusRouteH = true;
+		return self.statusRoutes[res.statusCode.toString()].handler(req,res);
+	}
+
+	// Already served ? Ciao!
+	if ( alreadyServed )
+		return;
+
+	// No.. default status handler
+	ans =	(res.statusCode == 404) ? 	{ error: 'No route for this request type' } :
+			(res.statusCode == 401) ?	{ warn:  'Authentication required' } :
+			(res.statusCode >= 400) ?	{ error: 'Got error '+res.statusCode } :
+										{ info:  'Returning status '+res.statusCode };
+
+	// Something to answer? Answer..!
+	if ( ans && !alreadyServed )
+		return self.json(req,res,ans,res.statusCode,headers);
+
+};
+
+
+// Answer with a text string
 exports.text = function(req,res,content,status,headers,callback) {
 
 	var
+		self = this,
 		length = Buffer.byteLength(content,'utf8'),
 		_headers = _merge({
 			'content-type':		'text/plain; charset=utf-8',
@@ -180,19 +360,11 @@ exports.text = function(req,res,content,status,headers,callback) {
 	res.writeHead(res.statusCode,_headers);
 	res.end(content);
 
-	// Request has a cache key? We need to cache it
-	if ( req.cacheKey ) {
-		objCache[req.cacheKey] = {
-			status:		res.statusCode,
-			headers:	_headers,
-			content:	content,
-			length:		length
-		};
-	}
+	// Log
 	_access_log(req,res,length);
 
 	// Report status
-	routeStatus(req,res,true);
+	routeStatus(self,req,res,true);
 
 	// Call the callback
 	if ( callback )
@@ -200,6 +372,7 @@ exports.text = function(req,res,content,status,headers,callback) {
 
 };
 
+// Answer with JSON
 exports.json = function(req,res,content,status,headers,pretty,callback) {
 
 	var
@@ -228,6 +401,7 @@ exports.json = function(req,res,content,status,headers,pretty,callback) {
 
 };
 
+// Proxy the request
 exports.proxy = function(req,res,hostOrURL,port,opts,callback){
 
 	var
@@ -372,478 +546,9 @@ exports.proxy = function(req,res,hostOrURL,port,opts,callback){
 };
 
 
-
-// Internal methods
-
-// Start the HTTP server
-exports.startServer = function(opts,handler){
-
-	// Our router
-	self.on = function(r,opts,reqHandler){
-		var
-			args = Array.prototype.slice.call(arguments, 0),
-			auth;
-
-		// Get arguments
-		r = args.shift();
-		reqHandler = args.pop();
-
-		// Merge options with the defaults
-		opts = _merge({
-//			method: "GET",
-			handler: reqHandler
-		},args.shift()||{});
-
-		// Authentication option on the route will be registered on the authRules list
-		if ( typeof opts.auth != "undefined" ) {
-			// Add to the authentication rules
-			authRules.push(buildAuthRule(r,opts.auth,opts.method));
-		}
-
-		// Cache option on the route will be registered on the cacheRules list
-		if ( opts.cache ) {
-			// Add to the cache rules
-			cacheRules.push(buildCacheRule(r,opts.cache,opts.method));
-		}
-
-		// Register the route on the right list
-		if ( r instanceof RegExp )
-			rxRoutes.push([r,opts]);
-		else if ( typeof r == "string" )
-			routes[(opts.method?opts.method.toUpperCase()+" ! ":"")+r] = opts;
-		else if ( typeof r == "number" )
-			statusRoutes[r.toString()] = opts;
-		else
-			throw new Error("Don't know what to do with route '"+r+"'");
-
-	};
-
-	// Authentication
-	self.auth = function(r,opts){
-		var
-			args = Array.prototype.slice.call(arguments, 0);
-
-		// Get the arguments
-		opts	= args.pop();
-		r		= args.shift();
-
-		// Add to the authentication rules
-		authRules.push(buildAuthRule(r,opts));
-	};
-
-	// Cache
-	self.cache = function(r,opts){
-		var
-			args = Array.prototype.slice.call(arguments, 0);
-
-		// Get the arguments
-		opts	= args.pop() || true;
-		r		= args.shift();
-
-		// Add to the cache rules
-		cacheRules.push(buildCacheRule(r,opts));
-	};
-
-	// Start server
-	var iface = (opts.interface == 'fastcgi') ? require('fastcgi-server') : http;
-	self._server = iface.createServer(function(req,res) {
-		handleRequest(req,res);
-	});
-	if ( opts.port ) {
-		self._server.listen(opts.port || 8080,opts.address || "0.0.0.0");
-		_log_info("Listening on "+(opts.address || "0.0.0.0")+":"+(opts.port||8080));
-	}
-	else if ( opts.address && opts.address.match(/\//) ) {
-		self._server.listen(opts.address);
-		_log_info("Listening on "+opts.address+" UNIX domain socket");
-	}
-	else {
-		_log_warn("Don't know how to listen");
-	}
-
-};
-
-
-// Handle a request
-var handleRequest = function(req,res) {
-
-	var
-		now = new Date();
-
-	// Request related values
-	req._cType = req.headers['content-type'] ? req.headers['content-type'].toString().replace(/;.*/g,"") : "unknown/unknown";
-	req.xRequestID = (reqSeq++) + "-" + process.pid.toString() + "-" + now.getYear()+now.getMonth()+now.getDay()+now.getHours()+now.getMinutes();
-	req.xConnectDate = now;
-	req.xRemoteAddr = req.connection.remoteAddress || (req.client && req.client._peername) ? req.client._peername.address : "0.0.0.0";
-	if ( req.xRemoteAddr == "127.0.0.1" && req.headers['x-forwarded-for'] && req.headers['x-forwarded-for'].match(/^(\d{1,3}\.){3}\d{1,3}$/) ) {
-		req.xDirectRemoteAddr = req.xRemoteAddr;
-		req.xRemoteAddr = req.headers['x-forwarded-for'];
-	}
-
-	// Request arguments
-	req.args = {};
-    req.originalURL = req.url;
-	if ( req.url.match(/^(.*?)\?(.*)$/) ) {
-		req.url = RegExp.$1;
-		req.urlNoArgs = RegExp.$1;
-		req.args = qs.parse(RegExp.$2);
-	}
-
-	// POST data reader
-	if ( req.method == "POST" ) {
-		req.readPOSTData = function(cb){
-			return readPOSTData(req,function(err){
-				return cb(err,req.POSTdata);
-			});
-		};
-	}
-
-	// Route request
-	return route(req,res);
-
-};
-
-// Read data from POST and parse it
-var readPOSTData = function(req,handler) {
-
-	// POST data already read, don't do it again
-	if ( req._readPOSTData )
-		return handler(null,req);
-	req._readPOSTData = true;
-
-	// multipart/form-data or just a regular urlencoded form?
-	if ( req._cType.match(/^multipart\/form\-data/) ) {
-		try {
-			var
-				form = new formidable.IncomingForm();
-
-			form.parse(req,function(err,args,files){
-				if ( err )
-					return handler(err,false);
-
-				req.POSTargs = args;
-				req.POSTfiles = files;
-				return handler(null,req);
-			});
-		}
-		catch(ex) {
-			return handler(ex,null);
-		}
-	}
-	else {
-		req.setEncoding("utf-8");
-		var buf = "";
-		req.on('data',function(chunk){ buf += chunk; });
-		req.on('end',function(){
-			if ( req._cType == "application/json" ) {
-				try { req.POSTjson = JSON.parse(buf); } catch(ex){ _log_error("Error parsing POST JSON: ",ex); }
-			}
-			else {
-				req.POSTargs = qs.parse(buf);
-				if ( req.POSTargs['json'] )
-					try { req.POSTjson = JSON.parse(req.POSTargs['json']); } catch(ex){  _log_error("Error parsing POST JSON: ",ex); }
-			}
-			return handler(null,req);
-		});
-	}
-
-};
-
-// Route a request (first, check for the authentication)
-var route = function(req,res) {
-
-	var
-		auth,
-		authUser = '',
-		authPass = '',
-		cache;
-
-    // Find for a matching authorization rule
-	for ( var x = 0 ; x < authRules.length; x++ ) {
-		var rule = authRules[x];
-		if ( req.url.match(rule.pattern) && (!rule.method || req.method == rule.method) ) {
-			auth = rule;
-			break;
-		}
-	}
-	if ( auth && !auth.check )
-		auth = null;
-
-	// Find for a matching cache rule
-	for ( var x = 0 ; x < cacheRules.length; x++ ) {
-		var rule = cacheRules[x];
-		if ( req.url.match(rule.pattern) && (!rule.method || req.method == rule.method) ) {
-			cache = rule;
-			break;
-		}
-	}
-
-	// Authenticate
-	return _if ( auth,
-		function(next) {
-			// Parse the Authorization header
-			if ( req.headers && req.headers.authorization && req.headers.authorization.match(/^basic +(.+)/i) ) {
-				var b64Auth = new Buffer(RegExp.$1,'base64');
-				if ( b64Auth.toString().match(/^([^:]+):(.*)$/) ) {
-					authUser = RegExp.$1;
-					authPass = RegExp.$2;
-				}
-			}
-
-			// Check the credentials
-			return auth.check(authUser,authPass,next);
-		},
-		function(err,valid) {
-			if ( err ) {
-				_log_error("Error checking user authentication: ",err);
-				res.statusCode = 500;
-				return routeStatus(req,res,false);
-			}
-
-			// Authentication error
-			if ( auth && !valid ) {
-				if ( authUser || authPass )
-					_log_info("Authentication failure on '"+req.url+"' with '"+authUser+"' and '"+authPass+"'");
-
-				res.statusCode = 401;
-				return routeStatus(req,res,false,{'www-authenticate':'Basic realm="'+auth.realm+'"'});
-			}
-
-			// Set the authenticated user name
-			req.authUser = authUser;
-
-			// Check cache
-			if ( cache ) {
-				req.cacheKey = cache.keyGenerator(req,res);
-				req.cacheRule = cache;
-				if ( req.cacheKey && objCache[req.cacheKey] && _sendCached(req,res,objCache[req.cacheKey]) )
-					return;
-			}
-
-			// Let go
-			return _route(req,res);
-		}
-	);
-
-};
-
-// Return the cache data
-var _sendCached = function(req,res,cacheObj) {
-
-	// Write the head
-	res.writeHead(cacheObj.status,cacheObj.headers);
-
-	// Pipe content from a file
-	if ( cacheObj.file ) {
- 		fs.createReadStream(cacheObj.file).pipe(res);
-		_access_log(req,res,stat.size,true);
-	}
-	// Write content
-	else if ( cacheObj.content != null ) {
-		res.end(cacheObj.content);
-		_access_log(req,res,cacheObj.length,true);
-	}
-	// Serve it.. but not from cache
-	else
-		return false;
-
-	return true;
-
-};
-
-// Route a request
-var _route = function(req,res) {
-
-	var
-		routeOpts,
-		matchedRoute;
-
-	// String routes
-	if ( routes[req.method+" ! "+req.url] != null ) {
-		routeOpts = routes[req.method+" ! "+req.url];
-	}
-	else if ( routes[req.url] ) {
-		routeOpts = routes[req.url];
-	}
-
-	// RegExp routes
-	else {
-		for ( var x = 0 ; x < rxRoutes.length ; x++ ) {
-			if ( req.url.match(rxRoutes[x][0]) && rxRoutes[x][1].method.toUpperCase() == req.method ) {
-				matchedRoute = rxRoutes[x][0];
-				routeOpts = rxRoutes[x][1];
-				break;
-			}
-		}
-	}
-
-	// Still no handler? 404...
-	if ( !routeOpts ) {
-		res.statusCode = 404;
-		return routeStatus(req,res,false);
-	}
-
-	// Read POST data ?
-	_if ( !routeOpts.dontReadPOSTData,
-		function(next){
-			readPOSTData(req,next);
-		},
-		function(err){
-			if ( err )
-				_log_error("Error reading request POST data: ",err);
-
-			// Set the RegExp object
-			if ( matchedRoute )
-				req.url.match(rxRoutes[x][0]);
-
-			// Call the route handler
-			return routeOpts.handler(req,res);
-		}
-	);
-
-};
-
-// Route a status occurrence
-var routeStatus = function(req,res,alreadyServed,headers) {
-
-	var
-		ans;
-
-	// Inside a status route handler ?
-	if ( req.onStatusRouteH )
-		return;
-
-	// Already served ? Mark it on request, so future route handlers can take this in consideration
-	req.served = alreadyServed;
-
-	// Do we have a status handler ?
-	if ( statusRoutes[res.statusCode.toString()] ) {
-		req.onStatusRouteH = true;
-		return statusRoutes[res.statusCode.toString()].handler(req,res);
-	}
-
-	// Already served ? Ciao!
-	if ( alreadyServed )
-		return;
-
-	// No.. default status handler
-	ans =	(res.statusCode == 404) ? { error: 'No route for this request type' } :
-		(res.statusCode == 401) ?	{ warn:  'Authentication required' } :
-		(res.statusCode >= 400) ?	{ error: 'Got error '+res.statusCode } :
-									{ info:  'Returning status '+res.statusCode };
-
-	// Something to answer? Answer..!
-	if ( ans && !alreadyServed )
-		return self.json(req,res,ans,res.statusCode,headers);
-
-};
-
-// Build an authentication rule based on the authentication options
-var buildAuthRule = function(pattern,authOpts,method) {
-
-	if ( authOpts == null )
-		authOpts = { check: null };
-
-	// Auth is a function, put her on the right place
-	if ( typeof(auth) == "function" )
-		authOpts = { check: authOpts };
-
-	// No realm? Set a default one
-	if ( !authOpts.realm )
-		authOpts.real = 'Authentication required';
-
-	// Didn't specify a check function but specified a username and password, build the function
-	if ( !authOpts.check && authOpts.username && authOpts.password ) {
-		authOpts.check = function(u,p,callback){
-			return callback(null,(u == authOpts.username && p == authOpts.password));
-		};
-	}
-
-	// Has a URL pattern ? If no.. default
-	authOpts.pattern = (pattern || /.*/);
-
-	// Has a method ? Yes.. make sure it's uppercase
-	if ( authOpts.method || authOpts.method )
-		authOpts.method = (method || authOpts.method).toUpperCase();
-
-	return authOpts;
-
-};
-
-// Build a cache rule based on the cache options
-var buildCacheRule = function(pattern,cacheOpts,method) {
-
-	// Cache is a function, put her on the right place
-	if ( typeof cacheOpts == "function" )
-		cacheOpts = { keyGenerator: cacheOpts };
-	else if ( typeof cacheOpts == "boolean" )
-		cacheOpts = { keyGenerator: cacheOpts ? function(req,res){return req.originalURL;} : null };
-	else if ( typeof cacheOpts == "number" )
-		cacheOpts = { expireIn: cacheOpts };
-	else
-		throw new Error("Unknown/Unsupported cache settings: ",cacheOpts);
-
-	if ( !cacheOpts.keyGenerator )
-		cacheOpts.keyGenerator = function(req,res){return req.originalURL;};
-	if ( !cacheOpts.expireIn )
-		cacheOpts.expireIn = 60;	// 1 minute
-
-	// Has a URL pattern ? If no.. default
-	cacheOpts.pattern = (pattern || /.*/);
-
-	// Has a method ? Yes.. make sure it's uppercase
-	if ( method || cacheOpts.method )
-		cacheOpts.method = (method || cacheOpts.method).toUpperCase();
-
-	return cacheOpts;
-
-};
-
 /*
-exports.template = function(req,res,filename,args,status,headers){
-
-	var
-		Template = require('tt2').Template,
-		template = new Template({
-			INCLUDE_PATH: "view",
-			FILTERS: {
-				JSON:		JSON.stringify,
-				JSONSIMPLE:	function(data) { return JSON.stringify(data).replace(/"(\w+)":/g,"$1:") },
-				number:		function(data) { return data.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ") }
-			}
-		});
-
-//	_log_info("Serving result of template "+filename+".tt");
-	template.process(filename+".tt",args,function(err,output){
-		if ( err ) {
-			res.writeHead(500,{'content-type':'text/html; charset=utf-8'});
-			return res.end("Error: "+JSON.stringify(err));
-		}
-		if ( output == null ) {
-			res.writeHead(500,{'content-type':'text/html; charset=utf-8'});
-			return res.end("Error: "+JSON.stringify(err));
-		}
-
-		var
-			length = Buffer.byteLength(output,'utf8');
-
-		// Send the output
-		res.statusCode = status || 200;
-		res.writeHead(res.statusCode,_merge({
-			'content-type':		'text/html; charset=utf-8',
-			'content-length':	length
-		},headers,true));
-		res.end(output);
-
-		// Log
-		_access_log(req,res,length);
-
-		// Report status
-		return routeStatus(req,res,true);
-	});
-
-};
-*/
+ * Internals
+ */
 
 // Logging functions
 var _log_info = function() {
