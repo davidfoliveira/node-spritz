@@ -10,12 +10,23 @@ var
 	modules		= require('./modules');
 
 
-// Our data
+// Our data (from the default/first server)
 exports.routes			= {};
 exports.rxRoutes		= [];
 exports.statusRoutes	= {};
 exports.reqSeq			= 0;
-
+exports.hooks			= {
+	'arrive':			[],		// done
+	'readheaders':		[],		// done
+	'read':				[],		// done
+	'findroute':		[],		// done
+	'beforewritehead':	[],		// done
+	// writehead ->				// done
+	'beforewritedata':	[],		// done
+	// writedata ->				// done
+	'beforefinish':		[],		// done
+	'finish':			[]		// done
+};
 
 
 // Create a new server instance
@@ -26,13 +37,17 @@ exports.newServer = function(){
 		newServer;
 
 	// Clone the current object
-	newServer = _merge(exports,{});
+	newServer = _merge(self,{});
 
 	// Reset some data
 	newServer.routes		= {};
 	newServer.rxRoutes		= [];
 	newServer.statusRoutes	= {};
 	newServer.reqSeq		= 0;
+
+	// Cleanup hooks
+	for ( var h in newServer.hooks )
+		newServer.hooks[h] = [];
 
 	// Delete newServer()
 	delete newServer.newServer;
@@ -43,8 +58,56 @@ exports.newServer = function(){
 };
 
 
+// Register a hook
+exports.hook = function(name,callback){
+
+	var
+		self = this;
+
+	if ( !name || !callback )
+		return;
+	if ( name.match(/^request(.+)$/) )
+		name = RegExp.$1;
+	if ( name == "writehead" )
+		name = 'beforewritedata';
+	else if ( name == "writedata" )
+		name = 'beforefinish';
+
+	// Hook does not exit? Ciao!
+	if ( !self.hooks[name] )
+		return;
+
+	// Register the callback
+	self.hooks[name].push(callback);
+
+};
+
+
+// Fires a hook
+var _fireHook = function(self,name,args,callback) {
+
+	// No callbacks, ciao!
+	if ( !self.hooks[name] || self.hooks[name].length == 0 ) {
+		// Process the request normally
+		return callback(null);
+	}
+
+	// Add the 'self' instance
+	args.unshift(self);
+
+	// Call the hooks
+	return series(self.hooks[name],args,function(err){
+		if ( err ) {
+			console.log("Error calling '"+name+"' hooks: ",err);
+		}
+		// Continue processing
+		return callback(err);
+	});
+
+};
+
 // Start the server
-exports.start = function(opts,handler){
+exports.start = function(opts,callback){
 
 	var
 		self = this,
@@ -54,11 +117,11 @@ exports.start = function(opts,handler){
 
 	// Get and validate arguments
 	if ( typeof opts == "function" ) {
-		handler = opts;
+		callback = opts;
 		opts = null;
 	}
-	if ( !handler )
-		handler = function(){};
+	if ( !callback )
+		callback = function(){};
 	if ( !opts )
 		opts = { port: 8080, address: "0.0.0.0" };
 	self._opts = opts;
@@ -100,16 +163,16 @@ exports.start = function(opts,handler){
 		}
 		else {
 			process.title = "Spritz child process";
-			return _startServer(self,opts,handler);
+			return _startServer(self,opts,callback);
 		}
 	}
 	else
-		return _startServer(self,opts,handler);
+		return _startServer(self,opts,callback);
 
 };
 
 // Start the HTTP server
-var _startServer = function(self,opts,handler){
+var _startServer = function(self,opts,callback){
 
 	var
 		iface,
@@ -135,8 +198,13 @@ var _startServer = function(self,opts,handler){
 		// Register the route on the right list
 		if ( r instanceof RegExp )
 			self.rxRoutes.push([r,opts]);
-		else if ( typeof r == "string" )
-			self.routes[(opts.method?opts.method.toUpperCase()+" ! ":"")+r] = opts;
+		else if ( typeof r == "string" ) {
+			// Register a hook
+			if ( r.match(/^#(\w+)$/) )
+				self.hook(RegExp.$1,reqHandler);
+			else
+				self.routes[(opts.method?opts.method.toUpperCase()+" ! ":"")+r] = opts;
+		}
 		else if ( typeof r == "number" )
 			self.statusRoutes[r.toString()] = opts;
 		else
@@ -174,45 +242,55 @@ var handleRequest = function(self,req,res) {
 	var
 		now = new Date();
 
-	// Request related values
-	req._cType = req.headers['content-type'] ? req.headers['content-type'].toString().replace(/;.*/g,"") : "unknown/unknown";
-	req.xRequestID = (self.reqSeq++) + "-" + process.pid.toString() + "-" + now.getYear()+now.getMonth()+now.getDay()+now.getHours()+now.getMinutes();
-	req.xConnectDate = now;
-	req.xRemoteAddr = req.connection.remoteAddress || ((req.client && req.client._peername) ? req.client._peername.address : "0.0.0.0");
-	if ( req.xRemoteAddr == "127.0.0.1" && req.headers['x-forwarded-for'] && req.headers['x-forwarded-for'].match(/^(\d{1,3}\.){3}\d{1,3}$/) ) {
-		req.xDirectRemoteAddr = req.xRemoteAddr;
-		req.xRemoteAddr = req.headers['x-forwarded-for'];
-	}
+	// Request just arrived, fire the hook
+	return _fireHook(self,'arrive',[req,res,{}],function(){
 
-	// Request arguments
-	req.args = {};
-    req.originalURL = req.url;
-	if ( req.url.match(/^(.*?)\?(.*)$/) ) {
-		req.url = RegExp.$1;
-		req.urlNoArgs = RegExp.$1;
-		req.args = qs.parse(RegExp.$2);
-	}
+		// Request related values
+		req._cType = req.headers['content-type'] ? req.headers['content-type'].toString().replace(/;.*/g,"") : "unknown/unknown";
+		req.xRequestID = (self.reqSeq++) + "-" + process.pid.toString() + "-" + now.getYear()+now.getMonth()+now.getDay()+now.getHours()+now.getMinutes();
+		req.xConnectDate = now;
+		req.xRemoteAddr = req.connection.remoteAddress || ((req.client && req.client._peername) ? req.client._peername.address : "0.0.0.0");
+		if ( req.xRemoteAddr == "127.0.0.1" && req.headers['x-forwarded-for'] && req.headers['x-forwarded-for'].match(/^(\d{1,3}\.){3}\d{1,3}$/) ) {
+			req.xDirectRemoteAddr = req.xRemoteAddr;
+			req.xRemoteAddr = req.headers['x-forwarded-for'];
+		}
 
-	// POST data reader
-	if ( req.method == "POST" ) {
-		req.readPOSTData = function(cb){
-			return readPOSTData(req,function(err){
-				return cb(err,req.POSTdata);
-			});
-		};
-	}
+		// Request arguments
+		req.args = {};
+	    req.originalURL = req.url;
+		if ( req.url.match(/^(.*?)\?(.*)$/) ) {
+			req.url = RegExp.$1;
+			req.urlNoArgs = RegExp.$1;
+			req.args = qs.parse(RegExp.$2);
+		}
 
-	// Route request
-	return route(self,req,res);
+		// POST data reader
+		req.readPOSTData = function(cb){cb(null,{});};
+		if ( req.method == "POST" ) {
+			req.readPOSTData = function(cb){
+				return readPOSTData(this,function(err){
+					return cb(err,this.POSTdata);
+				});
+			};
+		}
+
+		// Finished read request
+		return _fireHook(self,'readheaders',[req,res,{}],function(){
+
+			// Route request
+			return route(self,req,res);
+
+		});
+	});
 
 };
 
 // Read data from POST and parse it
-var readPOSTData = function(req,handler) {
+var readPOSTData = function(req,callback) {
 
 	// POST data already read, don't do it again
 	if ( req._readPOSTData )
-		return handler(null,req);
+		return callback(null,req);
 	req._readPOSTData = true;
 
 	// multipart/form-data or just a regular urlencoded form?
@@ -223,15 +301,15 @@ var readPOSTData = function(req,handler) {
 
 			form.parse(req,function(err,args,files){
 				if ( err )
-					return handler(err,false);
+					return callback(err,false);
 
 				req.POSTargs = args;
 				req.POSTfiles = files;
-				return handler(null,req);
+				return callback(null,req);
 			});
 		}
 		catch(ex) {
-			return handler(ex,null);
+			return callback(ex,null);
 		}
 	}
 	else {
@@ -247,7 +325,7 @@ var readPOSTData = function(req,handler) {
 				if ( req.POSTargs['json'] )
 					try { req.POSTjson = JSON.parse(req.POSTargs['json']); } catch(ex){  _log_error("Error parsing POST JSON: ",ex); }
 			}
-			return handler(null,req);
+			return callback(null,req);
 		});
 	}
 
@@ -283,24 +361,35 @@ var route = function(self,req,res) {
 	// Still no handler? 404...
 	if ( !routeOpts ) {
 		res.statusCode = 404;
-		return routeStatus(self,req,res,false);
+		// Fire read hook
+		return _fireHook(self,'read',[req,res,{}],function(){
+			return routeStatus(self,req,res,false);
+		});
 	}
 
 	// Read POST data ?
 	_if ( !routeOpts.dontReadPOSTData,
 		function(next){
-			readPOSTData(req,next);
+			req.readPOSTData(next);
 		},
 		function(err){
 			if ( err )
 				_log_error("Error reading request POST data: ",err);
 
-			// Set the RegExp object
-			if ( matchedRoute )
-				req.url.match(self.rxRoutes[x][0]);
+			// Fire read hook
+			return _fireHook(self,'read',[req,res,{}],function(){
 
-			// Call the route handler
-			return routeOpts.handler(req,res);
+				// Fire find route hook
+				return _fireHook(self,'findroute',[req,res,{route: matchedRoute}],function(){
+
+					// Set the RegExp object
+					if ( matchedRoute )
+						req.url.match(self.rxRoutes[x][0]);
+
+					// Call the route handler
+					return routeOpts.handler(req,res);
+				});
+			});
 		}
 	);
 
@@ -311,7 +400,8 @@ var route = function(self,req,res) {
 var routeStatus = function(self,req,res,alreadyServed,headers) {
 
 	var
-		ans;
+		ans,
+		route;
 
 	// Inside a status route handler ?
 	if ( req.onStatusRouteH )
@@ -321,9 +411,12 @@ var routeStatus = function(self,req,res,alreadyServed,headers) {
 	req.served = alreadyServed;
 
 	// Do we have a status handler ?
-	if ( self.statusRoutes[res.statusCode.toString()] ) {
+	route = self.statusRoutes[res.statusCode.toString()];
+	if ( route ) {
 		req.onStatusRouteH = true;
-		return self.statusRoutes[res.statusCode.toString()].handler(req,res);
+		return _fireHook(self,'findroute',[req,res,{route:route}],function(){
+			return route.handler(req,res);
+		});
 	}
 
 	// Already served ? Ciao!
@@ -343,6 +436,47 @@ var routeStatus = function(self,req,res,alreadyServed,headers) {
 };
 
 
+// Write the head of an HTTP response
+var _writeHead = function(self,req,res,status,headers,callback){
+
+	var
+		headObj = {status: status, headers: headers};
+
+	return _fireHook(self,'beforewritehead',[req,res,headObj],function(){
+		res.writeHead(headObj.status,headObj.headers);
+		return callback();
+	});
+
+}
+
+// Write the head of an HTTP response
+var _writeData = function(self,req,res,data,end,callback){
+
+	var
+		dataObj = { data: data, end: end };
+
+	return _fireHook(self,'beforewritedata',[req,res,dataObj],function(){
+
+		// Just writing...
+		if ( !dataObj.end ) {
+			res.write(dataObj.data);
+			return callback();
+		}
+
+		// Write and end
+		return _fireHook(self,'beforefinish',[req,res,dataObj],function(){
+			res.end(dataObj.data);
+
+			// Finish
+			return _fireHook(self,'finish',[req,res,{}],function(){
+				return callback();
+			});
+		});
+	});
+
+}
+
+
 // Answer with a text string
 exports.text = function(req,res,content,status,headers,callback) {
 
@@ -355,20 +489,23 @@ exports.text = function(req,res,content,status,headers,callback) {
 			'date':				new Date().toUTCString()
 		},headers,true);
 
-	// Set the status code and send data
+	// Set the status code
 	res.statusCode = status || 200;
-	res.writeHead(res.statusCode,_headers);
-	res.end(content);
 
-	// Log
-	_access_log(req,res,length);
+	// Send data
+	return _writeHead(self,req,res,res.statusCode,_headers,function(){
+		return _writeData(self,req,res,content,true,function(){
+			// Log
+			_access_log(req,res,length);
 
-	// Report status
-	routeStatus(self,req,res,true);
+			// Report status
+			routeStatus(self,req,res,true);
 
-	// Call the callback
-	if ( callback )
-		callback(null,true);
+			// Call the callback
+			if ( callback )
+				callback(null,true);
+		});
+	});
 
 };
 
@@ -405,6 +542,7 @@ exports.json = function(req,res,content,status,headers,pretty,callback) {
 exports.proxy = function(req,res,hostOrURL,port,opts,callback){
 
 	var
+		self = this,
 		args = Array.prototype.slice.call(arguments, 0),
 		url,
 		timeout,
@@ -480,8 +618,9 @@ exports.proxy = function(req,res,hostOrURL,port,opts,callback){
 			fired = true;
 			if ( _opts.onTimeout )
 				return _opts.onTimeout();
-			res.writeHead(502,{'Content-type':'text/plain; charset=UTF-8'});
-			res.end('502 - Gateway timeout :-(');
+			return _writeHead(self,req,res,502,{'Content-type':'text/plain; charset=UTF-8'},function(){
+				return _writeData(self,req,res,'502 - Gateway timeout :-(',true);
+			});
 		},_opts.timeout);
 	}
 
@@ -491,52 +630,53 @@ exports.proxy = function(req,res,hostOrURL,port,opts,callback){
 			return;
 		if ( timeout )
 			clearTimeout(timeout);
-		res.writeHead(pres.statusCode, pres.headers);
+		return _writeHead(self,req,res,pres.statusCode,pres.headers,function(){
+			if ( typeof opts.outputFilter == "function" ) {
+				var allData = null;
+				pres.on('data',function(data){
+					var newB = new Buffer(((allData != null)?allData.length:0)+data.length);
+					if ( allData != null )
+						allData.copy(newB,0,0,allData.length);
+					data.copy(newB,(allData != null)?allData.length:0,0,data.length);
+					allData = newB;
+				});
+				pres.on('end',function(){
+					var d = opts.outputFilter(allData,req,res,preq,pres);
+					if ( d == null )
+						d = allData;
+					docSize = d.length;
+					return _writeData(self,req,res,d,true,function(){
+						// Run the callback
+						if ( callback )
+							callback(null,true);
 
-		if ( typeof opts.outputFilter == "function" ) {
-			var allData = null;
-			pres.on('data',function(data){
-				var newB = new Buffer(((allData != null)?allData.length:0)+data.length);
-				if ( allData != null )
-					allData.copy(newB,0,0,allData.length);
-				data.copy(newB,(allData != null)?allData.length:0,0,data.length);
-				allData = newB;
-			});
-			pres.on('end',function(){
-				var d = opts.outputFilter(allData,req,res,preq,pres);
-				if ( d == null )
-					d = allData;
-				docSize = d.length;
-				res.write(d);
-				res.end();
+						// Log
+						return _access_log(req,res,pres.headers['content-length']||docSize||'??');
+					});
+				});
+			}
+			else {
+				var pr = pres.pipe(res);
+				pr.on('end',function(){
+					// Run the callback
+					if ( callback )
+						callback(null,true);
 
-				// Run the callback
-				if ( callback )
-					callback(null,true);
-
-				// Log
-				_access_log(req,res,pres.headers['content-length']||docSize||'??');
-			});
-		}
-		else {
-			var pr = pres.pipe(res);
-			pr.on('end',function(){
-				// Run the callback
-				if ( callback )
-					callback(null,true);
-
-				// Log
-				_access_log(req,res,pres.headers['content-length']||docSize||'??');
-			});
-		}
+					// Log
+					_access_log(req,res,pres.headers['content-length']||docSize||'??');
+				});
+			}
+		});
 	});
 	preq.on('error',function(e){
 		if ( _opts.onError )
 			return _opts.onError(e);
-		res.writeHead(503,{'content-type':'text/plain; charset=UTF-8'});
-		res.end('503 - Gateway error: '+e.toString());
-		req.abort();
-		_access_log(req,res,19);
+		return _writeHead(self,req,res,503,{'content-type':'text/plain; charset=UTF-8'},function(){
+			return _writeData(self,req,res,'503 - Gateway error: '+e.toString(),true,function(){
+				req.abort();
+				return _access_log(req,res,19);
+			});
+		});
 	});
 	if ( req.headers && req.headers['content-length'] )
 		req.pipe(preq);
@@ -608,4 +748,28 @@ var _merge = function(a,b,lcProps){
 // Asyncronous if
 var _if = function(c,a,b) {
 	return c ? a(b) : b();
+};
+
+
+// Call a list of callbacks in series (could eventually be replaced by async.series or async.mapSeries but we don't want to add more dependencies)
+var series = function(fns,args,callback){
+	var
+		_self	= args.shift(),
+		_fns	= fns.slice(),
+		_r		= [],
+		_next	= function(){
+			if ( !_fns.length )
+				return callback(null,_r);
+			_fns.shift().apply(_self,args);
+		};
+
+	// Add as last argument our function return handler
+	args.push(function(err,val){
+		if ( err )
+			return callback(err,_r);
+		_r.push(val);
+		return setImmediate(_next);
+	});
+
+	return _next();
 };
