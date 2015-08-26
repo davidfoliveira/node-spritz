@@ -794,7 +794,7 @@ exports.proxy = function(req,res,hostOrURL,port,opts,callback){
 
 
 // Template
-exports.template = function(req,res,file,data,callback){
+exports.template = function(req,res,file,data,status,headers,callback){
 
 	throw new Exception("No templating module was loaded. Use spritz.use()");
 

@@ -32,7 +32,7 @@ exports.init = function(){
 	// When a request arrives
 	this.on('#FINDROUTE',function(req,res,args,cb){
 		if ( !args || !args.route || !args.route.auth )
-			return;
+			return cb(null,false,false);
 
 		// Parse the user Authorization header
 		var
