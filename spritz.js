@@ -2,7 +2,7 @@
 
 /*
   Spritz Web server framework
-  Version: 0.5.0
+  Version: 0.5.2
   Author: David Oliveira <d.oliveira@prozone.org>
  */
 
@@ -146,7 +146,7 @@ var _fireHook = function(self,name,args,callback) {
 	// Call the hooks
 	return series(self.hooks[name],args,function(err,done){
 		if ( err ) {
-//			console.log("Error calling '"+name+"' hooks: ",err);
+//			_log_error("Error calling '"+name+"' hooks: ",err);
 			return self.json(args[0],args[1],{error:err},500);
 		}
 
@@ -452,7 +452,7 @@ var route = function(self,req,res) {
 	// RegExp routes
 	else {
 		for ( var x = 0 ; x < self.rxRoutes.length ; x++ ) {
-			if ( req.url.match(self.rxRoutes[x][0]) && self.rxRoutes[x][1].method.toUpperCase() == req.method ) {
+			if ( req.url.match(self.rxRoutes[x][0]) && (!self.rxRoutes[x][1].method || (self.rxRoutes[x][1].method.toUpperCase() == req.method)) ) {
 				matchedRoute = self.rxRoutes[x][0];
 				routeOpts = self.rxRoutes[x][1];
 				break;
@@ -551,6 +551,7 @@ var _writeHead = function(self,req,res,status,headers,callback){
 		res.writeHead(headObj.status,headObj.headers);
 		// Mark on the answer that we sent it
 		res._sent = true;
+		res.statusCode = headObj.status;
 		return callback();
 	});
 
@@ -582,6 +583,25 @@ var _writeData = function(self,req,res,data,end,callback){
 	});
 
 }
+
+// Pipe a stream into an HTTP response
+var _pipeStream = function(self,req,res,stream,callback){
+
+	var
+		pr;
+
+	return _fireHook(self,'beforewritedata',[req,res,stream],function(){
+
+		// Pipe the stream
+ 		pr = stream.pipe(res);
+		pr.on('end',function(){
+			callback(null,true);
+		});
+
+	});
+
+}
+
 
 
 // Answer with a text string
@@ -644,6 +664,80 @@ exports.json = function(req,res,content,status,headers,pretty,callback) {
 		callback(null,true);
 
 };
+
+// Send a static file
+exports.staticfile = function(req,res,filename,status,headers,callback) {
+
+	var
+		self = this,
+		ext = "unknown";
+
+	// Remove unsafe stuff
+	filename = filename.replace(/\.\./,"").replace(/\/+/,"/");
+	// He's asking for a directory? We don't serve directories..
+	if ( filename.match(/\/$/) )
+		filename += "index.html";
+	// Get the extension for sending the propper mime type
+	if ( filename.match(/\.(\w+)$/) )
+		ext = RegExp.$1;
+
+//	_log_info("Serving static file "+filename);
+	return fs.stat(filename, function(err, stat) {
+		if ( err ) {
+			if ( err.code == "ENOENT" ) {
+				res.statusCode = 404;
+				callback(err,null);
+				return routeStatus(req,res,false);
+			}
+
+			// Send the error
+			return self.json(req,res,{error:err},500,{},function(_err){
+				// Error sending error, great!
+				if ( _err ) {
+//					_log_error("Error sending error: ",err);
+					return callback ? callback(_err,null) : null;
+				}
+				return callback ? callback(err,null) : null;
+			});
+		}
+
+		var
+			expires = new Date(),
+			_headers = _merge({
+				'content-type':		(self._opts.mimes[ext] || 'text/plain'),
+				'content-length':	stat.size,
+				'date':				new Date().toUTCString()
+			},headers,true);
+
+		// Send the http response head
+		return _writeHead(self,req,res,status || 200,_headers,function(){
+
+			// Send file
+			return _pipeStream(self,req,res,fs.createReadStream(filename),function(){
+
+				// Write and end
+				return _fireHook(self,'beforefinish',[req,res,dataObj],function(){
+					res.end();
+
+					// Finish
+					return _fireHook(self,'finish',[req,res,{}],function(){
+
+						// Report status
+						routeStatus(req,res,true);
+
+						// Log
+						_access_log(req,res,stat.size);
+
+						return callback ? callback() : null;
+					});
+				});
+
+			});
+		});
+	});
+
+};
+exports.file = exports.staticfile;
 
 // Proxy the request
 exports.proxy = function(req,res,hostOrURL,port,opts,callback){
@@ -890,4 +984,3 @@ var series = function(fns,args,callback){
 
 // Load all the built-in modules
 exports.use(require('./modules'));
-
