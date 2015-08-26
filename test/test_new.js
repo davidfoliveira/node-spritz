@@ -1,6 +1,6 @@
 var
 	fs = require('fs'),
-	spritz = require('./spritz'),
+	spritz = require('../spritz'),
 	https;
 
 spritz.start({
@@ -51,4 +51,13 @@ https.on('#finish',function(req,res,args,cb){
 });
 https.on('/',function(req,res){
 	return spritz.text(req,res,'/ 443');
+});
+//https.on('/template',{auth:function(u,p,cb){return cb(null,u=="capo" && p=="dei capi");}},function(req,res){
+
+https.use(require('spritz-jstemplate'),{viewDir:__dirname+'/views'});
+https.on('/template',{auth:{username:"zapo",password:"dei capi"}},function(req,res){
+	return https.template(req,res,'test.jst',{sir:process.env.LOGNAME});
+});
+https.on(404,function(req,res){
+	return https.text(req,res,'404 FAIL',404);
 });

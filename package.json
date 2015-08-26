@@ -2,7 +2,7 @@
   "author": "David Oliveira <d.oliveira@prozone.org>",
   "name": "spritz",
   "description": "A pretty simple and lightweight web framework",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/davidfoliveira/node-spritz/"
@@ -22,6 +22,8 @@
     "spritz",
     "web",
     "server",
-    "framework"
+    "framework",
+    "authentication",
+    "hooks"
   ]
 }

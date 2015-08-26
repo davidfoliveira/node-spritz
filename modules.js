@@ -1,4 +1,4 @@
 module.exports = [
-	require('./modules/auth'),
-	require('./modules/cache')
+	require('./modules/basicauth'),
+//	require('./modules/cache'),
 ];

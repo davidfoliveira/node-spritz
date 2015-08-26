@@ -1,13 +1,19 @@
 "use strict";
 
+/*
+  Spritz Web server framework
+  Version: 0.5.0
+  Author: David Oliveira <d.oliveira@prozone.org>
+ */
+
+
 var
 	fs			= require('fs'),
 	http		= require('http'),
 	https		= require('https'),
 	cluster 	= require('cluster'),
 	qs			= require('querystring'),
-	formidable	= require('formidable'),
-	modules		= require('./modules');
+	formidable	= require('formidable');
 
 
 // Our data (from the default/first server)
@@ -16,28 +22,29 @@ exports.rxRoutes		= [];
 exports.statusRoutes	= {};
 exports.reqSeq			= 0;
 exports.hooks			= {
-	'arrive':			[],		// done
-	'readheaders':		[],		// done
-	'read':				[],		// done
-	'findroute':		[],		// done
-	'beforewritehead':	[],		// done
-	// writehead ->				// done
-	'beforewritedata':	[],		// done
-	// writedata ->				// done
-	'beforefinish':		[],		// done
-	'finish':			[]		// done
+	'setroute':			[],		// sync  | 
+	'arrive':			[],		// async | done
+	'readheaders':		[],		// async | done
+	'read':				[],		// async | done
+	'findroute':		[],		// async | done
+	'beforewritehead':	[],		// async | done
+	// writehead ->				// async | done
+	'beforewritedata':	[],		// async | done
+	// writedata ->				// async | done
+	'beforefinish':		[],		// async | done
+	'finish':			[]		// async | done
 };
-
+exports.globalHooks		= {};
 
 // Create a new server instance
 exports.newServer = function(){
 
 	var
 		self = this,
-		newServer;
+		newServer
 
 	// Clone the current object
-	newServer = _merge(self,{});
+	newServer = self.cloneServer();
 
 	// Reset some data
 	newServer.routes		= {};
@@ -45,15 +52,43 @@ exports.newServer = function(){
 	newServer.statusRoutes	= {};
 	newServer.reqSeq		= 0;
 
-	// Cleanup hooks
+	// Cleanup hooks (copy them from globalHooks or initialize them)
 	for ( var h in newServer.hooks )
-		newServer.hooks[h] = [];
+		newServer.hooks[h] = exports.globalHooks[h] ? exports.globalHooks[h].slice(0) : [];
 
 	// Delete newServer()
 	delete newServer.newServer;
 
 	// Return it
 	return newServer;
+
+};
+
+
+// Clone a currently existing server instance
+exports.cloneServer = function(){
+
+	var
+		self = this;
+
+	// Clone the current object and return it
+	return _merge(self,{});
+
+};
+
+
+// Use a certain (or a list of) module(s)
+exports.use = function(modules,args) {
+
+	var
+		self = this,
+		_mods = (modules instanceof Array) ? modules : [modules];
+
+	// Initialize all the modules
+	_mods.forEach(function(mod){
+		if ( typeof mod.init == "function" )
+			mod.init.apply(self,[args||{}]);
+	});
 
 };
 
@@ -66,7 +101,7 @@ exports.hook = function(name,callback){
 
 	if ( !name || !callback )
 		return;
-	if ( name.match(/^request(.+)$/) )
+	if ( name.match(/^request(.+)$/i) )
 		name = RegExp.$1;
 	if ( name == "writehead" )
 		name = 'beforewritedata';
@@ -74,17 +109,30 @@ exports.hook = function(name,callback){
 		name = 'beforefinish';
 
 	// Hook does not exit? Ciao!
-	if ( !self.hooks[name] )
+	if ( !self.hooks[name.toLowerCase()] )
 		return;
 
 	// Register the callback
-	self.hooks[name].push(callback);
+	self.hooks[name.toLowerCase()].push(callback);
+
+	// Uppercase hooks are 'global' (to being set on new servers)
+	if ( name.toUpperCase() == name ) {
+		name = name.toLowerCase();
+		if ( !self.globalHooks[name] )
+			self.globalHooks[name] = [];
+		// Register the callback
+		self.globalHooks[name].push(callback);
+	}
 
 };
 
 
 // Fires a hook
 var _fireHook = function(self,name,args,callback) {
+
+	var
+		sentBeforeHook = (args.length > 1 && args[1]._sent),
+		sentDuringHook;
 
 	// No callbacks, ciao!
 	if ( !self.hooks[name] || self.hooks[name].length == 0 ) {
@@ -96,15 +144,48 @@ var _fireHook = function(self,name,args,callback) {
 	args.unshift(self);
 
 	// Call the hooks
-	return series(self.hooks[name],args,function(err){
+	return series(self.hooks[name],args,function(err,done){
 		if ( err ) {
-			console.log("Error calling '"+name+"' hooks: ",err);
+//			console.log("Error calling '"+name+"' hooks: ",err);
+			return self.json(args[0],args[1],{error:err},500);
 		}
+
+		// It's done, or the answer was sent during hook... finito!
+		sentDuringHook = !sentBeforeHook && (args.length > 1 && args[1]._sent);
+		if ( done || sentDuringHook )
+			return;
+
 		// Continue processing
 		return callback(err);
 	});
 
 };
+
+// Fires a syncronous hook
+var _fireSyncHook = function(self,name,args,callback) {
+
+	var
+		sentBeforeHook = (args.length > 1 && args[1]._sent),
+		sentDuringHook;
+
+	// No callbacks, ciao!
+	if ( !self.hooks[name] || self.hooks[name].length == 0 ) {
+		// Process the request normally
+		return callback(null);
+	}
+
+	// Call the hooks
+	for ( var x = 0 ; x < self.hooks[name].length ; x++ ) {
+		var hook = self.hooks[name][x];
+		var done = hook.apply(self,args);
+		if ( typeof done == "boolean" && done )
+			return true;
+	}
+
+	return false;
+
+};
+
 
 // Start the server
 exports.start = function(opts,callback){
@@ -159,7 +240,7 @@ exports.start = function(opts,callback){
 			});
 
 			// Some fake methods
-			self.on = function(){};
+//			self.on = function(){};
 		}
 		else {
 			process.title = "Spritz child process";
@@ -180,36 +261,6 @@ var _startServer = function(self,opts,callback){
 			handleRequest(self,req,res);
 		};
 
-	// Our router
-	self.on = function(r,opts,reqHandler){
-		var
-			args = Array.prototype.slice.call(arguments, 0);
-
-		// Get arguments
-		r = args.shift();
-		reqHandler = args.pop();
-
-		// Merge options with the defaults
-		opts = _merge({
-//			method: "GET",
-			handler: reqHandler
-		},args.shift()||{});
-
-		// Register the route on the right list
-		if ( r instanceof RegExp )
-			self.rxRoutes.push([r,opts]);
-		else if ( typeof r == "string" ) {
-			// Register a hook
-			if ( r.match(/^#(\w+)$/) )
-				self.hook(RegExp.$1,reqHandler);
-			else
-				self.routes[(opts.method?opts.method.toUpperCase()+" ! ":"")+r] = opts;
-		}
-		else if ( typeof r == "number" )
-			self.statusRoutes[r.toString()] = opts;
-		else
-			throw new Error("Don't know what to do with route '"+r+"'");
-	};
 
 	// Create the server
 	iface = (opts.proto == 'fastcgi')	? require('fastcgi-server') :
@@ -332,6 +383,57 @@ var readPOSTData = function(req,callback) {
 };
 
 
+// Generic route handler
+exports.on = function(r,opts,reqHandler){
+
+	var
+		self = this,
+		args = Array.prototype.slice.call(arguments, 0);
+
+	// Get arguments
+	r = args.shift();
+	reqHandler = args.pop();
+
+	// Is it a hook ? Set it using the hook()
+	if ( typeof r == "string" && r.match(/^#(\w+)$/) )
+		return self.hook(RegExp.$1,reqHandler);
+
+
+	// Merge options with the defaults
+	opts = _merge({
+//		method: "GET",
+		handler: reqHandler,
+		expr:    r
+	},args.shift()||{});
+
+	// Fire the setroute hook
+	if ( _fireSyncHook(self,'setroute',[opts]) ) {
+		// Setting route was aborted
+		return;
+	}
+
+	// Is it a RegExp ?
+	if ( r instanceof RegExp ) {
+		// Register the route on the RegExp route list
+		self.rxRoutes.push([r,opts]);
+	}
+	else if ( typeof r == "string" ) {
+		// Register the route on the string route list
+		self.routes[(opts.method?opts.method.toUpperCase()+" ! ":"")+r] = opts;
+	}
+	else if ( typeof r == "number" ) {
+		r = r.toString();
+		if ( !self.statusRoutes[r] )
+			self.statusRoutes[r] = [];
+		// Register the route on the status route list
+		self.statusRoutes[r].push(opts);
+	}
+	else
+		throw new Error("Don't know what to do with route '"+r+"'");
+
+};
+
+
 // Route a request
 var route = function(self,req,res) {
 
@@ -368,7 +470,7 @@ var route = function(self,req,res) {
 	}
 
 	// Read POST data ?
-	_if ( !routeOpts.dontReadPOSTData,
+	return _if ( !routeOpts.dontReadPOSTData,
 		function(next){
 			req.readPOSTData(next);
 		},
@@ -380,7 +482,7 @@ var route = function(self,req,res) {
 			return _fireHook(self,'read',[req,res,{}],function(){
 
 				// Fire find route hook
-				return _fireHook(self,'findroute',[req,res,{route: matchedRoute}],function(){
+				return _fireHook(self,'findroute',[req,res,{route: routeOpts}],function(){
 
 					// Set the RegExp object
 					if ( matchedRoute )
@@ -401,7 +503,7 @@ var routeStatus = function(self,req,res,alreadyServed,headers) {
 
 	var
 		ans,
-		route;
+		routes;
 
 	// Inside a status route handler ?
 	if ( req.onStatusRouteH )
@@ -411,11 +513,14 @@ var routeStatus = function(self,req,res,alreadyServed,headers) {
 	req.served = alreadyServed;
 
 	// Do we have a status handler ?
-	route = self.statusRoutes[res.statusCode.toString()];
-	if ( route ) {
+	routes = self.statusRoutes[res.statusCode.toString()];
+	if ( routes ) {
 		req.onStatusRouteH = true;
-		return _fireHook(self,'findroute',[req,res,{route:route}],function(){
-			return route.handler(req,res);
+		return _fireHook(self,'findroute',[req,res,{route:{handler: route,expr:res.statusCode}}],function(){
+			var
+				handlers = routes.map(function(r){return r.handler});
+			// Call the handlers
+			return series(handlers,[self,req,res],function(err,done){});
 		});
 	}
 
@@ -444,6 +549,8 @@ var _writeHead = function(self,req,res,status,headers,callback){
 
 	return _fireHook(self,'beforewritehead',[req,res,headObj],function(){
 		res.writeHead(headObj.status,headObj.headers);
+		// Mark on the answer that we sent it
+		res._sent = true;
 		return callback();
 	});
 
@@ -686,6 +793,14 @@ exports.proxy = function(req,res,hostOrURL,port,opts,callback){
 };
 
 
+// Template
+exports.template = function(req,res,file,data,callback){
+
+	throw new Exception("No templating module was loaded. Use spritz.use()");
+
+};
+
+
 /*
  * Internals
  */
@@ -756,20 +871,23 @@ var series = function(fns,args,callback){
 	var
 		_self	= args.shift(),
 		_fns	= fns.slice(),
-		_r		= [],
 		_next	= function(){
 			if ( !_fns.length )
-				return callback(null,_r);
+				return callback(null,false);
 			_fns.shift().apply(_self,args);
 		};
 
 	// Add as last argument our function return handler
-	args.push(function(err,val){
+	args.push(function(err,stop,done){
 		if ( err )
-			return callback(err,_r);
-		_r.push(val);
-		return setImmediate(_next);
+			return callback(err,false);
+		return (stop || done) ? callback(null,done) : setImmediate(_next);
 	});
 
 	return _next();
 };
+
+
+// Load all the built-in modules
+exports.use(require('./modules'));
+
