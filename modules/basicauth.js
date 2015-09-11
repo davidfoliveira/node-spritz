@@ -1,14 +1,18 @@
 // Metadata
 exports._meta = {
+	core: true,
 	type: "templating",
 	name: "basicauth"
 };
+
 
 // On load
 exports.init = function(){
 
 	// Register the auth function
 	this.auth = function(route,opts) {
+
+		console.log("MAKE ME");
 		
 	};
 

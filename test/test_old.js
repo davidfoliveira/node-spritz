@@ -28,8 +28,8 @@ spritz.on('/post',{method:"POST"},function(req,res){
 	console.log("GOT a POST request: ",req.headers);
 	spritz.json(req,res,{postData:req.POSTargs});
 });
-spritz.on('/npm/',{dontReadPOSTData:true},function(req,res){
-	spritz.proxy(req,res,"https://www.npmjs.org/");
+spritz.on('/sapo/',{dontReadPOSTData:true},function(req,res){
+	spritz.proxy(req,res,"http://www.sapo.pt/");
 //	spritz.proxy(req,res,"127.0.0.1",9999,{proto:"http",timeout: 2000});
 });
 

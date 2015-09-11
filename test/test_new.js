@@ -10,6 +10,28 @@ spritz.on('/',function(req,res){
 	return spritz.text(req,res,'/ 8081');
 });
 
+spritz.on('/test-route-hook',
+	{
+		'#findroute': function(req,res,args,cb){
+			console.log("ROUTE FINDROUTE "+req.url);
+			return cb(null,true);
+		},
+		'#finish': function(req,res,args,cb){
+			console.log("ROUTE FINISHED  "+req.url);
+			return cb();
+		},
+	},
+	function(req,res){
+		return spritz.text(req,res,'/test-route-hook');
+	}
+);
+
+
+
+
+
+
+
 https = spritz.newServer();
 https.start({
 //	proto:	"https",

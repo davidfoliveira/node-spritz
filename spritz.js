@@ -8,7 +8,6 @@
 
 
 var
-	fs			= require('fs'),
 	http		= require('http'),
 	https		= require('https'),
 	cluster 	= require('cluster'),
@@ -26,6 +25,7 @@ exports.hooks			= {
 	'arrive':			[],		// async | done
 	'readheaders':		[],		// async | done
 	'read':				[],		// async | done
+
 	'findroute':		[],		// async | done
 	'beforewritehead':	[],		// async | done
 	// writehead ->				// async | done
@@ -35,6 +35,7 @@ exports.hooks			= {
 	'finish':			[]		// async | done
 };
 exports.globalHooks		= {};
+
 
 // Create a new server instance
 exports.newServer = function(){
@@ -63,7 +64,6 @@ exports.newServer = function(){
 	return newServer;
 
 };
-
 
 // Clone a currently existing server instance
 exports.cloneServer = function(){
@@ -132,19 +132,26 @@ var _fireHook = function(self,name,args,callback) {
 
 	var
 		sentBeforeHook = (args.length > 1 && args[1]._sent),
-		sentDuringHook;
+		sentDuringHook,
+		_allHooks = (self.hooks[name] || []).slice(0),
+		req = (args.length > 0) ? args[0] : null;
 
-	// No callbacks, ciao!
-	if ( !self.hooks[name] || self.hooks[name].length == 0 ) {
+	// Does the request have a hook declaration ?
+	if ( req && req._route && typeof req._route['#'+name] == "function" )
+		_allHooks.push(args[0]._route['#'+name]);
+
+	// No hooks? Ciao!
+	if ( _allHooks.length == 0 ) {
 		// Process the request normally
 		return callback(null);
 	}
+
 
 	// Add the 'self' instance
 	args.unshift(self);
 
 	// Call the hooks
-	return series(self.hooks[name],args,function(err,done){
+	return series(_allHooks,args,function(err,done){
 		if ( err ) {
 //			_log_error("Error calling '"+name+"' hooks: ",err);
 			return self.json(args[0],args[1],{error:err},500);
@@ -236,7 +243,7 @@ exports.start = function(opts,callback){
 
 			_log_info("Launched "+numProcs+" childs");
 			cluster.on('exit',function(worker,code,signal){
-				_log_error("Process #"+worker.process.pid+" died (signal "+signal+")");
+				self._log_error("Process #"+worker.process.pid+" died (signal "+signal+")");
 			});
 
 			// Some fake methods
@@ -306,6 +313,12 @@ var handleRequest = function(self,req,res) {
 			req.xRemoteAddr = req.headers['x-forwarded-for'];
 		}
 
+		// Response related values
+		res._cookies = {};
+		res.setCookie = function(n,v,o) {
+			res._cookies[n] = { value: v, opts: o };
+		};
+
 		// Request arguments
 		req.args = {};
 	    req.originalURL = req.url;
@@ -329,7 +342,7 @@ var handleRequest = function(self,req,res) {
 		return _fireHook(self,'readheaders',[req,res,{}],function(){
 
 			// Route request
-			return route(self,req,res);
+			return self._route(req,res);
 
 		});
 	});
@@ -435,9 +448,10 @@ exports.on = function(r,opts,reqHandler){
 
 
 // Route a request
-var route = function(self,req,res) {
+var _route = function(req,res) {
 
 	var
+		self = this,
 		routeOpts,
 		matchedRoute;
 
@@ -465,7 +479,7 @@ var route = function(self,req,res) {
 		res.statusCode = 404;
 		// Fire read hook
 		return _fireHook(self,'read',[req,res,{}],function(){
-			return routeStatus(self,req,res,false);
+			return self._routeStatus(req,res,false);
 		});
 	}
 
@@ -482,6 +496,7 @@ var route = function(self,req,res) {
 			return _fireHook(self,'read',[req,res,{}],function(){
 
 				// Fire find route hook
+				req._route = routeOpts;
 				return _fireHook(self,'findroute',[req,res,{route: routeOpts}],function(){
 
 					// Set the RegExp object
@@ -496,12 +511,14 @@ var route = function(self,req,res) {
 	);
 
 };
+exports._route = _route;
 
 
 // Route a status occurrence
-var routeStatus = function(self,req,res,alreadyServed,headers) {
+var _routeStatus = function(req,res,alreadyServed,headers) {
 
 	var
+		self = this,
 		ans,
 		routes;
 
@@ -516,12 +533,18 @@ var routeStatus = function(self,req,res,alreadyServed,headers) {
 	routes = self.statusRoutes[res.statusCode.toString()];
 	if ( routes ) {
 		req.onStatusRouteH = true;
-		return _fireHook(self,'findroute',[req,res,{route:{handler: route,expr:res.statusCode}}],function(){
-			var
-				handlers = routes.map(function(r){return r.handler});
-			// Call the handlers
-			return series(handlers,[self,req,res],function(err,done){});
-		});
+		return mapSeries(routes,self,
+			function(r,next){
+				return _fireHook(self,'findroute',[req,res,{route:r}],next);
+			},
+			function(){
+				var
+					handlers = routes.map(function(r){return r.handler});
+
+				// Call the handlers
+				return series(handlers,[self,req,res],function(err,done){});				
+			}
+		);
 	}
 
 	// Already served ? Ciao!
@@ -539,6 +562,7 @@ var routeStatus = function(self,req,res,alreadyServed,headers) {
 		return self.json(req,res,ans,res.statusCode,headers);
 
 };
+exports._routeStatus = _routeStatus;
 
 
 // Write the head of an HTTP response
@@ -555,7 +579,8 @@ var _writeHead = function(self,req,res,status,headers,callback){
 		return callback();
 	});
 
-}
+};
+exports._writeHead = _writeHead;
 
 // Write the head of an HTTP response
 var _writeData = function(self,req,res,data,end,callback){
@@ -583,6 +608,7 @@ var _writeData = function(self,req,res,data,end,callback){
 	});
 
 }
+exports._writeData = _writeData;
 
 // Pipe a stream into an HTTP response
 var _pipeStream = function(self,req,res,stream,callback){
@@ -600,8 +626,8 @@ var _pipeStream = function(self,req,res,stream,callback){
 
 	});
 
-}
-
+};
+exports._pipeStream = _pipeStream;
 
 
 // Answer with a text string
@@ -623,10 +649,10 @@ exports.text = function(req,res,content,status,headers,callback) {
 	return _writeHead(self,req,res,res.statusCode,_headers,function(){
 		return _writeData(self,req,res,content,true,function(){
 			// Log
-			_access_log(req,res,length);
+			self._access_log(req,res,length);
 
 			// Report status
-			routeStatus(self,req,res,true);
+			self._routeStatus(req,res,true);
 
 			// Call the callback
 			if ( callback )
@@ -665,227 +691,6 @@ exports.json = function(req,res,content,status,headers,pretty,callback) {
 
 };
 
-// Send a static file
-exports.staticfile = function(req,res,filename,status,headers,callback) {
-
-	var
-		self = this,
-		ext = "unknown";
-
-	// Remove unsafe stuff
-	filename = filename.replace(/\.\./,"").replace(/\/+/,"/");
-	// He's asking for a directory? We don't serve directories..
-	if ( filename.match(/\/$/) )
-		filename += "index.html";
-	// Get the extension for sending the propper mime type
-	if ( filename.match(/\.(\w+)$/) )
-		ext = RegExp.$1;
-
-//	_log_info("Serving static file "+filename);
-	return fs.stat(filename, function(err, stat) {
-		if ( err ) {
-			if ( err.code == "ENOENT" ) {
-				res.statusCode = 404;
-				callback(err,null);
-				return routeStatus(req,res,false);
-			}
-
-			// Send the error
-			return self.json(req,res,{error:err},500,{},function(_err){
-				// Error sending error, great!
-				if ( _err ) {
-//					_log_error("Error sending error: ",err);
-					return callback ? callback(_err,null) : null;
-				}
-				return callback ? callback(err,null) : null;
-			});
-		}
-
-		var
-			expires = new Date(),
-			_headers = _merge({
-				'content-type':		(self._opts.mimes[ext] || 'text/plain'),
-				'content-length':	stat.size,
-				'date':				new Date().toUTCString()
-			},headers,true);
-
-		// Send the http response head
-		return _writeHead(self,req,res,status || 200,_headers,function(){
-
-			// Send file
-			return _pipeStream(self,req,res,fs.createReadStream(filename),function(){
-
-				// Write and end
-				return _fireHook(self,'beforefinish',[req,res,dataObj],function(){
-					res.end();
-
-					// Finish
-					return _fireHook(self,'finish',[req,res,{}],function(){
-
-						// Report status
-						routeStatus(req,res,true);
-
-						// Log
-						_access_log(req,res,stat.size);
-
-						return callback ? callback() : null;
-					});
-				});
-
-			});
-		});
-	});
-
-};
-exports.file = exports.staticfile;
-
-// Proxy the request
-exports.proxy = function(req,res,hostOrURL,port,opts,callback){
-
-	var
-		self = this,
-		args = Array.prototype.slice.call(arguments, 0),
-		url,
-		timeout,
-		fired = false,
-		docSize = 0,
-		_opts = {};
-
-	// Get the arguments
-	req			= args.shift();
-	res			= args.shift();
-	hostOrURL	= args.shift();
-	opts		= args.pop();
-	port		= args.shift();
-
-	// What url ?
-	url = (req.url === req.urlNoArgs) ? req.originalURL : req.url;
-
-	// Options with defaults
-	_opts = _merge({
-		proto:   "http",
-		host:    hostOrURL,
-		port:    port,
-		path:    url,
-		headers: req.headers || {}
-	},opts||{},true);
-
-	// Trying to proxy a POST request with already read POST data ?
-	if ( req.method == "POST" && req._readPOSTData ) {
-		var err = new Error("Trying to proxy a POST request with POST data already read. Please supply dontReadPOSTData:true on route options.");
-		if ( _opts.onError )
-			return _opts.onError(err);
-		else
-			throw err;
-	}
-
-	// Validate and load host/url
-	if ( !hostOrURL )
-		throw new Error("No host/url to send the request");
-	// Host:port
-	else if ( hostOrURL.match(/:(\d+)$/) ) {
-		_opts.port = parseInt(RegExp.$1);
-		_opts.host = hostOrURL.replace(/:.*$/,"");
-		_opts.headers.host = _opts.host;
-	}
-	// URL
-	else if ( hostOrURL.match(/^https?:\/\//) ) {
-		var u = require('url').parse(hostOrURL);
-		_opts.proto = u.protocol.replace(/:.*$/,"");
-		_opts.host = u.hostname;
-		_opts.headers.host = u.hostname;
-		_opts.port = u.port;
-		_opts.path = u.path;
-	}
-
-	// No port ? defaults to the default protocol port
-	if ( !_opts.port )
-		_opts.port = (_opts.proto == "https" ? 443 : 80);
-
-	var
-		proto = (_opts.proto == "https") ? https : http,
-		preq = proto.request({
-			host:    _opts.host,
-			port:    _opts.port,
-			method:  req.method,
-			headers: _opts.headers || req.headers,
-			path:    _opts.path
-		});
-
-	// Timeout event
-	if ( _opts.timeout ) {
-		timeout = setTimeout(function(){
-			preq.abort();
-			fired = true;
-			if ( _opts.onTimeout )
-				return _opts.onTimeout();
-			return _writeHead(self,req,res,502,{'Content-type':'text/plain; charset=UTF-8'},function(){
-				return _writeData(self,req,res,'502 - Gateway timeout :-(',true);
-			});
-		},_opts.timeout);
-	}
-
-	// On response arrive
-	preq.on('response',function(pres){
-		if ( fired )
-			return;
-		if ( timeout )
-			clearTimeout(timeout);
-		return _writeHead(self,req,res,pres.statusCode,pres.headers,function(){
-			if ( typeof opts.outputFilter == "function" ) {
-				var allData = null;
-				pres.on('data',function(data){
-					var newB = new Buffer(((allData != null)?allData.length:0)+data.length);
-					if ( allData != null )
-						allData.copy(newB,0,0,allData.length);
-					data.copy(newB,(allData != null)?allData.length:0,0,data.length);
-					allData = newB;
-				});
-				pres.on('end',function(){
-					var d = opts.outputFilter(allData,req,res,preq,pres);
-					if ( d == null )
-						d = allData;
-					docSize = d.length;
-					return _writeData(self,req,res,d,true,function(){
-						// Run the callback
-						if ( callback )
-							callback(null,true);
-
-						// Log
-						return _access_log(req,res,pres.headers['content-length']||docSize||'??');
-					});
-				});
-			}
-			else {
-				var pr = pres.pipe(res);
-				pr.on('end',function(){
-					// Run the callback
-					if ( callback )
-						callback(null,true);
-
-					// Log
-					_access_log(req,res,pres.headers['content-length']||docSize||'??');
-				});
-			}
-		});
-	});
-	preq.on('error',function(e){
-		if ( _opts.onError )
-			return _opts.onError(e);
-		return _writeHead(self,req,res,503,{'content-type':'text/plain; charset=UTF-8'},function(){
-			return _writeData(self,req,res,'503 - Gateway error: '+e.toString(),true,function(){
-				req.abort();
-				return _access_log(req,res,19);
-			});
-		});
-	});
-	if ( req.headers && req.headers['content-length'] )
-		req.pipe(preq);
-	else
-		preq.end();
-
-};
-
 
 // Template
 exports.template = function(req,res,file,data,status,headers,callback){
@@ -901,13 +706,13 @@ exports.template = function(req,res,file,data,status,headers,callback){
 
 // Logging functions
 var _log_info = function() {
-        return _log("INFO:  ",arguments);
+    return _log("INFO:  ",arguments);
 }
 var _log_warn = function() {
-        return _log("WARN:  ",arguments);
+    return _log("WARN:  ",arguments);
 }
 var _log_error = function() {
-        return _log("ERROR: ",arguments);
+    return _log("ERROR: ",arguments);
 }
 var _log = function(type,args) {
 	var
@@ -930,10 +735,14 @@ var _log = function(type,args) {
 		// Send to the master process, so we avoid problems with many processes writing on the same file
 		process.send({fn:'console.log',args: _args});
 	}
-}
+};
+exports._log		= _log;
+exports._log_info	= _log_info;
+exports._log_warn	= _log_warn;
+exports._log_error	= _log_error;
 
 // Access log
-var _access_log = function(req,res,length) {
+exports._access_log = function(req,res,length) {
 	var
 		timeSpent = new Date().getTime() - req.xConnectDate.getTime();
 
@@ -953,6 +762,7 @@ var _merge = function(a,b,lcProps){
 	}
 	return o;
 };
+exports._merge = _merge;
 
 // Asyncronous if
 var _if = function(c,a,b) {
@@ -981,6 +791,22 @@ var series = function(fns,args,callback){
 	return _next();
 };
 
+var mapSeries = function(arr,_self,itCb,fiCb){
+	var
+		_arr	= arr.slice(),
+		_res	= [],
+		_next	= function(err,res){
+			if ( !_arr.length )
+				return fiCb(err,_res);
+			itCb.apply(_self,[_arr.shift(),function(err,res){
+				if ( err )
+					return fiCb(err,_res);
+				_res.push(res);
+				setImmediate(_next);
+			}]);
+		};
+    return _next();
+};
 
 // Load all the built-in modules
 exports.use(require('./modules'));
