@@ -21,7 +21,7 @@ exports.rxRoutes		= [];
 exports.statusRoutes	= {};
 exports.reqSeq			= 0;
 exports.hooks			= {
-	'setroute':			[],		// sync  | 
+	'setroute':			[],		// sync  |
 	'arrive':			[],		// async | done
 	'readheaders':		[],		// async | done
 	'read':				[],		// async | done
@@ -216,7 +216,7 @@ exports.start = function(opts,callback){
 
 	// Defaults
 	if ( !opts.mimes )
-		opts.mimes = { 'html': 'text/html', 'htm': 'text/html', 'js': 'text/javascript', 'css': 'text/css', 'gif': 'image/gif', 'jpg': 'image/jpeg', 'png': 'image/png' }; 
+		opts.mimes = { 'html': 'text/html', 'htm': 'text/html', 'js': 'text/javascript', 'css': 'text/css', 'gif': 'image/gif', 'jpg': 'image/jpeg', 'png': 'image/png' };
 	if ( !opts.processes )
 		opts.processes = 1;
 
@@ -542,7 +542,7 @@ var _routeStatus = function(req,res,alreadyServed,headers) {
 					handlers = routes.map(function(r){return r.handler});
 
 				// Call the handlers
-				return series(handlers,[self,req,res],function(err,done){});				
+				return series(handlers,[self,req,res],function(err,done){});
 			}
 		);
 	}
