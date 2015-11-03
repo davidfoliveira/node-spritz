@@ -1,8 +1,10 @@
 var
 	spritz = require('../spritz');
+//	spritz = require('../spritz').start({port:8090});
 
 // Start
-spritz.start({port:8090,processes:(require('os').cpus().length)});
+//spritz.start({port:8090,processes:(require('os').cpus().length)});
+spritz.start({port:8090});
 
 // Listen on homepage
 spritz.on('/',function(req,res){
@@ -26,9 +28,16 @@ spritz.on('/post',{method:"POST"},function(req,res){
 	console.log("GOT a POST request: ",req.headers);
 	spritz.json(req,res,{postData:req.POSTargs});
 });
-spritz.on('/npm/',{dontReadPOSTData:true},function(req,res){
-	spritz.proxy(req,res,"https://www.npmjs.org/");
+spritz.on('/sapo/',{dontReadPOSTData:true},function(req,res){
+	spritz.proxy(req,res,"http://www.sapo.pt/");
 //	spritz.proxy(req,res,"127.0.0.1",9999,{proto:"http",timeout: 2000});
+});
+
+spritz.on('/cache/',{cache:true},function(req,res){
+	console.log("Processing request "+req.url);
+	setTimeout(function(){
+		spritz.text(req,res,'Tuo spritz è pronto!');
+	},1000);
 });
 
 // Status handlers

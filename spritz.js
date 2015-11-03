@@ -1,65 +1,227 @@
 "use strict";
 
 /*
-  Spritz Web server framework - based on web module for SAPO Meta/Cache
-
-  Version: 0.3
+  Spritz Web server framework
+  Version: 0.5.2
   Author: David Oliveira <d.oliveira@prozone.org>
-  Changed: Ricardo Malta <ricardo.malta@sapo.pt>
  */
 
+
 var
-	fs			= require('fs'),
-	cluster		= require('cluster'),
 	http		= require('http'),
 	https		= require('https'),
+	cluster 	= require('cluster'),
 	qs			= require('querystring'),
-	formidable	= require('formidable'),
-	consolidate = require('consolidate'),
-
-	reqSeq			= 0,
-	routes			= {},
-	rxRoutes		= [],
-	statusRoutes	= {},
-	authRules		= [],
-	templEngines	= {},
-	self			= exports;
+	formidable	= require('formidable');
 
 
-// Start
-exports.start = function(opts,handler){
+// Our data (from the default/first server)
+exports.routes			= {};
+exports.rxRoutes		= [];
+exports.statusRoutes	= {};
+exports.reqSeq			= 0;
+exports.hooks			= {
+	'setroute':			[],		// sync  |
+	'arrive':			[],		// async | done
+	'readheaders':		[],		// async | done
+	'read':				[],		// async | done
+
+	'findroute':		[],		// async | done
+	'beforewritehead':	[],		// async | done
+	// writehead ->				// async | done
+	'beforewritedata':	[],		// async | done
+	// writedata ->				// async | done
+	'beforefinish':		[],		// async | done
+	'finish':			[]		// async | done
+};
+exports.globalHooks		= {};
+
+
+// Create a new server instance
+exports.newServer = function(){
 
 	var
+		self = this,
+		newServer
+
+	// Clone the current object
+	newServer = self.cloneServer();
+
+	// Reset some data
+	newServer.routes		= {};
+	newServer.rxRoutes		= [];
+	newServer.statusRoutes	= {};
+	newServer.reqSeq		= 0;
+
+	// Cleanup hooks (copy them from globalHooks or initialize them)
+	for ( var h in newServer.hooks )
+		newServer.hooks[h] = exports.globalHooks[h] ? exports.globalHooks[h].slice(0) : [];
+
+	// Delete newServer()
+	delete newServer.newServer;
+
+	// Return it
+	return newServer;
+
+};
+
+// Clone a currently existing server instance
+exports.cloneServer = function(){
+
+	var
+		self = this;
+
+	// Clone the current object and return it
+	return _merge(self,{});
+
+};
+
+
+// Use a certain (or a list of) module(s)
+exports.use = function(modules,args) {
+
+	var
+		self = this,
+		_mods = (modules instanceof Array) ? modules : [modules];
+
+	// Initialize all the modules
+	_mods.forEach(function(mod){
+		if ( typeof mod.init == "function" )
+			mod.init.apply(self,[args||{}]);
+	});
+
+};
+
+
+// Register a hook
+exports.hook = function(name,callback){
+
+	var
+		self = this;
+
+	if ( !name || !callback )
+		return;
+	if ( name.match(/^request(.+)$/i) )
+		name = RegExp.$1;
+	if ( name == "writehead" )
+		name = 'beforewritedata';
+	else if ( name == "writedata" )
+		name = 'beforefinish';
+
+	// Hook does not exit? Ciao!
+	if ( !self.hooks[name.toLowerCase()] )
+		return;
+
+	// Register the callback
+	self.hooks[name.toLowerCase()].push(callback);
+
+	// Uppercase hooks are 'global' (to being set on new servers)
+	if ( name.toUpperCase() == name ) {
+		name = name.toLowerCase();
+		if ( !self.globalHooks[name] )
+			self.globalHooks[name] = [];
+		// Register the callback
+		self.globalHooks[name].push(callback);
+	}
+
+};
+
+
+// Fires a hook
+var _fireHook = function(self,name,args,callback) {
+
+	var
+		sentBeforeHook = (args.length > 1 && args[1]._sent),
+		sentDuringHook,
+		_allHooks = (self.hooks[name] || []).slice(0),
+		req = (args.length > 0) ? args[0] : null;
+
+	// Does the request have a hook declaration ?
+	if ( req && req._route && typeof req._route['#'+name] == "function" )
+		_allHooks.push(args[0]._route['#'+name]);
+
+	// No hooks? Ciao!
+	if ( _allHooks.length == 0 ) {
+		// Process the request normally
+		return callback(null);
+	}
+
+
+	// Add the 'self' instance
+	args.unshift(self);
+
+	// Call the hooks
+	return series(_allHooks,args,function(err,done){
+		if ( err ) {
+//			_log_error("Error calling '"+name+"' hooks: ",err);
+			return self.json(args[0],args[1],{error:err},500);
+		}
+
+		// It's done, or the answer was sent during hook... finito!
+		sentDuringHook = !sentBeforeHook && (args.length > 1 && args[1]._sent);
+		if ( done || sentDuringHook )
+			return;
+
+		// Continue processing
+		return callback(err);
+	});
+
+};
+
+// Fires a syncronous hook
+var _fireSyncHook = function(self,name,args,callback) {
+
+	var
+		sentBeforeHook = (args.length > 1 && args[1]._sent),
+		sentDuringHook;
+
+	// No callbacks, ciao!
+	if ( !self.hooks[name] || self.hooks[name].length == 0 ) {
+		// Process the request normally
+		return callback(null);
+	}
+
+	// Call the hooks
+	for ( var x = 0 ; x < self.hooks[name].length ; x++ ) {
+		var hook = self.hooks[name][x];
+		var done = hook.apply(self,args);
+		if ( typeof done == "boolean" && done )
+			return true;
+	}
+
+	return false;
+
+};
+
+
+// Start the server
+exports.start = function(opts,callback){
+
+	var
+		self = this,
 		args = Array.prototype.slice.call(arguments, 0),
 		numProcs,
 		workers = [];
 
 	// Get and validate arguments
 	if ( typeof opts == "function" ) {
-		handler = opts;
+		callback = opts;
 		opts = null;
 	}
-	if ( !handler )
-		handler = function(){};
+	if ( !callback )
+		callback = function(){};
 	if ( !opts )
 		opts = { port: 8080, address: "0.0.0.0" };
 	self._opts = opts;
 
 	// Defaults
 	if ( !opts.mimes )
-		opts.mimes = { 'html': 'text/html', 'htm': 'text/html', 'js': 'text/javascript', 'css': 'text/css', 'gif': 'image/gif', 'jpg': 'image/jpeg', 'png': 'image/png' }; 
+		opts.mimes = { 'html': 'text/html', 'htm': 'text/html', 'js': 'text/javascript', 'css': 'text/css', 'gif': 'image/gif', 'jpg': 'image/jpeg', 'png': 'image/png' };
 	if ( !opts.processes )
 		opts.processes = 1;
 
-	if( opts.templateEngine )
-		self.templateEngine = opts.templateEngine;
-
-	self.templatePath = opts.templatePath ? opts.templatePath : "views";
-
-	if( !opts.templatePath.match(/\/$/))
-		self.templatePath += "/";
-
 	_log_info("Starting...");
+
 	// Cluster support
 	numProcs = (opts.processes || 1);
 	if ( numProcs > 1 ) {
@@ -81,289 +243,46 @@ exports.start = function(opts,handler){
 
 			_log_info("Launched "+numProcs+" childs");
 			cluster.on('exit',function(worker,code,signal){
-				_log_error("Process #"+worker.process.pid+" died (signal "+signal+")");
+				self._log_error("Process #"+worker.process.pid+" died (signal "+signal+")");
 			});
 
 			// Some fake methods
-			self.on = function(){};
-			self.auth = function(){};
+//			self.on = function(){};
 		}
 		else {
 			process.title = "Spritz child process";
-			return self.startServer(opts,handler);
+			return _startServer(self,opts,callback);
 		}
 	}
 	else
-		return self.startServer(opts,handler);
+		return _startServer(self,opts,callback);
 
 };
-
-
-// Stop
-exports.stop = function(handler){
-
-	_log_info("Stopping...");
-};
-
-
-// Send a static file
-exports.staticfile = function(req,res,filename,status,headers) {
-
-	var
-		ext = "unknown";
-
-	// Remove unsafe stuff
-	filename = filename.replace(/\.\./,"").replace(/\/+/,"/");
-	// He's asking for a directory? We don't serve directories..
-	if ( filename.match(/\/$/) )
-		filename += "index.html";
-	// Get the extension for sending the propper mime type
-	if ( filename.match(/\.(\w+)$/) )
-		ext = RegExp.$1;
-
-//	_log_info("Serving static file "+filename);
-	fs.stat(filename, function(err, stat) {
-		if ( err ) {
-			if ( err.code == "ENOENT" ) {
-				res.statusCode = 404;
-				return routeStatus(req,res,false);
-			}
-			res.writeHead(500,'Internal server error');
-			res.end('Internal server error: '+JSON.stringify(err));
-			return _access_log(req,res,length);
-		}
-
-		var
-			expires = new Date();
-
-		// Send
-		res.statusCode = status || 200;
-		res.writeHead(res.statusCode, _merge({
-			'content-type':		(self._opts.mimes[ext] || 'text/plain'),
-			'content-length':	stat.size,
-			'date':			new Date().toUTCString()
-		},headers));
-
-		// Send file
- 		fs.createReadStream(filename).pipe(res);
-		_access_log(req,res,stat.size);
-
-		// Report status
-		return routeStatus(req,res,true);
-	});
-
-};
-
-exports.text = function(req,res,content,status,headers) {
-
-	var
-		length =  Buffer.byteLength(content,'utf8');
-
-	res.statusCode = status || 200;
-	res.writeHead(res.statusCode, _merge({
-		'content-type':		'text/plain; charset=utf-8',
-		'content-length':	length,
-		'date':			new Date().toUTCString()
-	},headers));
-	res.end(content);
-	_access_log(req,res,length);
-
-	// Report status
-	return routeStatus(req,res,true);
-
-};
-
-exports.json = function(req,res,content,status,headers,pretty) {
-
-	var
-		strfyArgs = [content];
-
-	if ( pretty )
-		strfyArgs.push(null,4);
-
-	// Build JSON content
-	content = JSON.stringify.apply(null,strfyArgs);
-
-	// JSONP ?
-	if ( req.args.callback )
-		content = req.args.callback.toString() + "(" + content + ");";
-
-	return this.text(req,res,content,status,_merge({"content-type":"application/json; charset=utf-8"},headers));
-
-};
-
-exports.proxy = function(req,res,hostOrURL,port,opts){
-
-	var
-		args = Array.prototype.slice.call(arguments, 0),
-		url,
-		timeout,
-		fired = false,
-		_opts = {};
-
-	// Get the arguments
-	req = args.shift();
-	res = args.shift();
-	hostOrURL = args.shift();
-	opts = args.pop();
-	port = args.shift();
-
-	// What url ?
-	url = (req.url === req.urlNoArgs) ? req.originalURL : req.url;
-
-	// Options with defaults
-	_opts = _merge({
-		proto:   "http",
-		host:    hostOrURL,
-		port:    port,
-		path:    url,
-		headers: req.headers || {}
-	},opts||{});
-
-	// Trying to proxy a POST request with already read POST data ?
-	if ( req.method == "POST" && req._readPOSTData ) {
-		var err = new Error("Trying to proxy a POST request with POST data already read. Please supply dontReadPOSTData:true on route options.");
-		if ( _opts.onError )
-			return _opts.onError(err);
-		else
-			throw err;
-	}
-
-	// Validate and load host/url
-	if ( !hostOrURL )
-		throw new Error("No host/url to send the request");
-	// Host:port
-	else if ( hostOrURL.match(/:(\d+)$/) ) {
-		_opts.port = parseInt(RegExp.$1);
-		_opts.host = hostOrURL.replace(/:.*$/,"");
-		_opts.headers.host = _opts.host;
-	}
-	// URL
-	else if ( hostOrURL.match(/^https?:\/\//) ) {
-		var u = require('url').parse(hostOrURL);
-		_opts.proto = u.protocol.replace(/:.*$/,"");
-		_opts.host = u.hostname;
-		_opts.headers.host = u.hostname;
-		_opts.port = u.port;
-		_opts.path = u.path;
-	}
-
-	// No port ? defaults to the default protocol port
-	if ( !_opts.port )
-		_opts.port = (_opts.proto == "https" ? 443 : 80);
-
-	var
-		proto = (_opts.proto == "https") ? https : http,
-		preq = proto.request({
-			host:    _opts.host,
-			port:    _opts.port,
-			method:  req.method,
-			headers: _opts.headers || req.headers,
-			path:    _opts.path
-		});
-
-	// Timeout event
-	if ( _opts.timeout ) {
-		timeout = setTimeout(function(){
-			preq.abort();
-			fired = true;
-			if ( _opts.onTimeout )
-				return _opts.onTimeout();
-			res.writeHead(502,{'Content-type':'text/plain; charset=UTF-8'});
-			res.end('502 - Gateway timeout :-(');
-		},_opts.timeout);
-	}
-
-	// On response arrive
-	preq.on('response',function(pres){
-		if ( fired )
-			return;
-		if ( timeout )
-			clearTimeout(timeout);
-		res.writeHead(pres.statusCode, pres.headers);
-		pres.pipe(res);
-		_access_log(req,res,pres.headers['content-length']||'??');
-	});
-	preq.on('error',function(e){
-		if ( _opts.onError )
-			return _opts.onError(e);
-		res.writeHead(503,{'content-type':'text/plain; charset=UTF-8'});
-		res.end('503 - Gateway error: '+e.toString());
-		_access_log(req,res,19);
-	});
-	if ( req.headers && req.headers['content-length'] )
-		req.pipe(preq);
-	else
-		preq.end();
-
-};
-
-
-
-// Internal methods
 
 // Start the HTTP server
-exports.startServer = function(opts,handler){
+var _startServer = function(self,opts,callback){
 
-	// Our router
-	self.on = function(r,opts,reqHandler){
-		var
-			args = Array.prototype.slice.call(arguments, 0),
-			auth;
+	var
+		iface,
+		_handleRequest = function(req,res){
+			handleRequest(self,req,res);
+		};
 
-		// Get arguments
-		r = args.shift();
-		reqHandler = args.pop();
 
-		// Merge options with the defaults
-		opts = _merge({
-			method: "GET",
-			handler: reqHandler
-		},args.shift()||{});
+	// Create the server
+	iface = (opts.proto == 'fastcgi')	? require('fastcgi-server') :
+			(opts.proto == 'https')		? https	:
+			http;
+	self._server =	(opts.proto == "https")		? https.createServer(opts,_handleRequest) :
+					(opts.proto == "fastcgi")	? require('fastcgi-server').createServer(_handleRequest) :
+					http.createServer(_handleRequest);
 
-		// Authentication option on the route will be registered on the authRules list
-		if ( opts.auth ) {
-			// We have to convert the auth into an object so we can set the method
-			if ( typeof opts.auth == "function" )
-				opts.auth = { check: opts.auth };
-			opts.auth.method = opts.method;
-
-			// Add to the authentication rules
-			authRules.push(buildAuthRule(r,opts.auth));
-		}
-
-		// Register the route on the right list
-		if ( r instanceof RegExp )
-			rxRoutes.push([r,opts]);
-		else if ( typeof r == "string" )
-			routes[opts.method.toUpperCase()+" ! "+r] = opts;
-		else if ( typeof r == "number" )
-			statusRoutes[r.toString()] = opts;
-		else
-			throw new Error("Don't know what to do with route '"+r+"'");
-
-	};
-
-	// Authentication
-	self.auth = function(r,opts){
-		var
-			args = Array.prototype.slice.call(arguments, 0);
-
-		// Get the arguments
-		opts = args.pop();
-		r = args.shift();
-
-		// Add to the authentication rules
-		authRules.push(buildAuthRule(r,opts));
-	};
-
-	// Start server
-	self._server = http.createServer(function(req,res) {
-		handleRequest(req,res);
-	});
+	// Listen
+	if ( opts.port == null )
+		opts.port = (opts.proto == "https") ? 443 : 8080;
 	if ( opts.port ) {
 		self._server.listen(opts.port || 8080,opts.address || "0.0.0.0");
-		_log_info("Listening on "+(opts.address || "0.0.0.0")+":"+(opts.port||8080));
+		_log_info("Listening on "+(opts.address || "0.0.0.0")+":"+opts.port);
 	}
 	else if ( opts.address && opts.address.match(/\//) ) {
 		self._server.listen(opts.address);
@@ -375,52 +294,67 @@ exports.startServer = function(opts,handler){
 
 };
 
-
 // Handle a request
-var handleRequest = function(req,res) {
+var handleRequest = function(self,req,res) {
 
 	var
 		now = new Date();
 
-	// Request related values
-	req._cType = req.headers['content-type'] ? req.headers['content-type'].toString().replace(/;.*/g,"") : "unknown/unknown";
-	req.xRequestID = (reqSeq++) + "-" + process.pid.toString() + "-" + now.getYear()+now.getMonth()+now.getDay()+now.getHours()+now.getMinutes();
-	req.xConnectDate = now;
-	req.xRemoteAddr = req.connection.remoteAddress || (req.client && req.client._peername) ? req.client._peername.address : "0.0.0.0";
-	if ( req.xRemoteAddr == "127.0.0.1" && req.headers['x-forwarded-for'] && req.headers['x-forwarded-for'].match(/^(\d{1,3}\.){3}\d{1,3}$/) ) {
-		req.xDirectRemoteAddr = req.xRemoteAddr;
-		req.xRemoteAddr = req.headers['x-forwarded-for'];
-	}
+	// Request just arrived, fire the hook
+	return _fireHook(self,'arrive',[req,res,{}],function(){
 
-	// Request arguments
-	req.args = {};
-	if ( req.url.match(/^(.*?)\?(.*)$/) ) {
-		req.originalURL = req.url;
-		req.url = RegExp.$1;
-		req.urlNoArgs = RegExp.$1;
-		req.args = qs.parse(RegExp.$2);
-	}
+		// Request related values
+		req._cType = req.headers['content-type'] ? req.headers['content-type'].toString().replace(/;.*/g,"") : "unknown/unknown";
+		req.xRequestID = (self.reqSeq++) + "-" + process.pid.toString() + "-" + now.getYear()+now.getMonth()+now.getDay()+now.getHours()+now.getMinutes();
+		req.xConnectDate = now;
+		req.xRemoteAddr = req.connection.remoteAddress || ((req.client && req.client._peername) ? req.client._peername.address : "0.0.0.0");
+		if ( req.xRemoteAddr == "127.0.0.1" && req.headers['x-forwarded-for'] && req.headers['x-forwarded-for'].match(/^(\d{1,3}\.){3}\d{1,3}$/) ) {
+			req.xDirectRemoteAddr = req.xRemoteAddr;
+			req.xRemoteAddr = req.headers['x-forwarded-for'];
+		}
 
-	// POST data reader
-	if ( req.method == "POST" ) {
-		req.readPOSTData = function(cb){
-			return readPOSTData(req,function(err){
-				return cb(err,req.POSTdata);
-			});
+		// Response related values
+		res._cookies = {};
+		res.setCookie = function(n,v,o) {
+			res._cookies[n] = { value: v, opts: o };
 		};
-	}
 
-	// Route request
-	return route(req,res);
+		// Request arguments
+		req.args = {};
+	    req.originalURL = req.url;
+		if ( req.url.match(/^(.*?)\?(.*)$/) ) {
+			req.url = RegExp.$1;
+			req.urlNoArgs = RegExp.$1;
+			req.args = qs.parse(RegExp.$2);
+		}
+
+		// POST data reader
+		req.readPOSTData = function(cb){cb(null,{});};
+		if ( req.method == "POST" ) {
+			req.readPOSTData = function(cb){
+				return readPOSTData(this,function(err){
+					return cb(err,this.POSTdata);
+				});
+			};
+		}
+
+		// Finished read request
+		return _fireHook(self,'readheaders',[req,res,{}],function(){
+
+			// Route request
+			return self._route(req,res);
+
+		});
+	});
 
 };
 
 // Read data from POST and parse it
-var readPOSTData = function(req,handler) {
+var readPOSTData = function(req,callback) {
 
 	// POST data already read, don't do it again
 	if ( req._readPOSTData )
-		return handler(null,req);
+		return callback(null,req);
 	req._readPOSTData = true;
 
 	// multipart/form-data or just a regular urlencoded form?
@@ -431,15 +365,15 @@ var readPOSTData = function(req,handler) {
 
 			form.parse(req,function(err,args,files){
 				if ( err )
-					return handler(err,false);
+					return callback(err,false);
 
 				req.POSTargs = args;
 				req.POSTfiles = files;
-				return handler(null,req);
+				return callback(null,req);
 			});
 		}
 		catch(ex) {
-			return handler(ex,null);
+			return callback(ex,null);
 		}
 	}
 	else {
@@ -455,88 +389,86 @@ var readPOSTData = function(req,handler) {
 				if ( req.POSTargs['json'] )
 					try { req.POSTjson = JSON.parse(req.POSTargs['json']); } catch(ex){  _log_error("Error parsing POST JSON: ",ex); }
 			}
-			return handler(null,req);
+			return callback(null,req);
 		});
 	}
 
 };
 
-// Route a request (first, check for the authentication)
-var route = function(req,res) {
+
+// Generic route handler
+exports.on = function(r,opts,reqHandler){
 
 	var
-		auth,
-		authUser = '',
-		authPass = '';
+		self = this,
+		args = Array.prototype.slice.call(arguments, 0);
 
-	// Check for a matching authorization rule
-	for ( var x = 0 ; x < authRules.length; x++ ) {
-		var rule = authRules[x];
-		if ( req.url.match(rule.pattern) && (!rule.method || req.method == rule.method) ) {
-			auth = rule;
-			break;
-		}
+	// Get arguments
+	r = args.shift();
+	reqHandler = args.pop();
+
+	// Is it a hook ? Set it using the hook()
+	if ( typeof r == "string" && r.match(/^#(\w+)$/) )
+		return self.hook(RegExp.$1,reqHandler);
+
+
+	// Merge options with the defaults
+	opts = _merge({
+//		method: "GET",
+		handler: reqHandler,
+		expr:    r
+	},args.shift()||{});
+
+	// Fire the setroute hook
+	if ( _fireSyncHook(self,'setroute',[opts]) ) {
+		// Setting route was aborted
+		return;
 	}
 
-	// Authenticate
-	return _if ( auth,
-		function(next) {
-			// Parse the Authorization header
-			if ( req.headers && req.headers.authorization && req.headers.authorization.match(/^basic +(.+)/i) ) {
-				var b64Auth = new Buffer(RegExp.$1,'base64');
-				if ( b64Auth.toString().match(/^([^:]+):(.*)$/) ) {
-					authUser = RegExp.$1;
-					authPass = RegExp.$2;
-				}
-			}
-
-			// Check the credentials
-			return auth.check(authUser,authPass,next);
-		},
-		function(err,valid) {
-			if ( err ) {
-				_log_error("Error checking user authentication: ",err);
-				res.statusCode = 500;
-				return routeStatus(req,res,false);
-			}
-
-			// Authentication error
-			if ( auth && !valid ) {
-				if ( authUser || authPass )
-					_log_info("Authentication failure on '"+req.url+"' with '"+authUser+"' and '"+authPass+"'");
-
-				res.statusCode = 401;
-				return routeStatus(req,res,false,{'www-authenticate':'Basic realm="'+auth.realm+'"'});
-			}
-
-			// Set the authenticated user name
-			req.authUser = authUser;
-
-			// Let go
-			return _route(req,res);
-		}
-	);
+	// Is it a RegExp ?
+	if ( r instanceof RegExp ) {
+		// Register the route on the RegExp route list
+		self.rxRoutes.push([r,opts]);
+	}
+	else if ( typeof r == "string" ) {
+		// Register the route on the string route list
+		self.routes[(opts.method?opts.method.toUpperCase()+" ! ":"")+r] = opts;
+	}
+	else if ( typeof r == "number" ) {
+		r = r.toString();
+		if ( !self.statusRoutes[r] )
+			self.statusRoutes[r] = [];
+		// Register the route on the status route list
+		self.statusRoutes[r].push(opts);
+	}
+	else
+		throw new Error("Don't know what to do with route '"+r+"'");
 
 };
+
 
 // Route a request
 var _route = function(req,res) {
 
 	var
+		self = this,
 		routeOpts,
 		matchedRoute;
 
 	// String routes
-	if ( routes[req.method+" ! "+req.url] != null ) {
-		routeOpts = routes[req.method+" ! "+req.url];
+	if ( self.routes[req.method+" ! "+req.url] != null ) {
+		routeOpts = self.routes[req.method+" ! "+req.url];
+	}
+	else if ( self.routes[req.url] ) {
+		routeOpts = self.routes[req.url];
 	}
 
 	// RegExp routes
 	else {
-		for ( var x = 0 ; x < rxRoutes.length ; x++ ) {
-			if ( req.url.match(rxRoutes[x][0]) && rxRoutes[x][1].method.toUpperCase() == req.method ) {
-				matchedRoute = rxRoutes[x][0];
-				routeOpts = rxRoutes[x][1];
+		for ( var x = 0 ; x < self.rxRoutes.length ; x++ ) {
+			if ( req.url.match(self.rxRoutes[x][0]) && (!self.rxRoutes[x][1].method || (self.rxRoutes[x][1].method.toUpperCase() == req.method)) ) {
+				matchedRoute = self.rxRoutes[x][0];
+				routeOpts = self.rxRoutes[x][1];
 				break;
 			}
 		}
@@ -545,34 +477,50 @@ var _route = function(req,res) {
 	// Still no handler? 404...
 	if ( !routeOpts ) {
 		res.statusCode = 404;
-		return routeStatus(req,res,false);
+		// Fire read hook
+		return _fireHook(self,'read',[req,res,{}],function(){
+			return self._routeStatus(req,res,false);
+		});
 	}
 
 	// Read POST data ?
-	_if ( !routeOpts.dontReadPOSTData,
+	return _if ( !routeOpts.dontReadPOSTData,
 		function(next){
-			readPOSTData(req,next);
+			req.readPOSTData(next);
 		},
 		function(err){
 			if ( err )
 				_log_error("Error reading request POST data: ",err);
 
-			// Set the RegExp object
-			if ( matchedRoute )
-				req.url.match(rxRoutes[x][0]);
+			// Fire read hook
+			return _fireHook(self,'read',[req,res,{}],function(){
 
-			// Call the route handler
-			return routeOpts.handler(req,res);
+				// Fire find route hook
+				req._route = routeOpts;
+				return _fireHook(self,'findroute',[req,res,{route: routeOpts}],function(){
+
+					// Set the RegExp object
+					if ( matchedRoute )
+						req.url.match(self.rxRoutes[x][0]);
+
+					// Call the route handler
+					return routeOpts.handler(req,res);
+				});
+			});
 		}
 	);
 
 };
+exports._route = _route;
+
 
 // Route a status occurrence
-var routeStatus = function(req,res,alreadyServed,headers) {
+var _routeStatus = function(req,res,alreadyServed,headers) {
 
 	var
-		ans;
+		self = this,
+		ans,
+		routes;
 
 	// Inside a status route handler ?
 	if ( req.onStatusRouteH )
@@ -582,9 +530,21 @@ var routeStatus = function(req,res,alreadyServed,headers) {
 	req.served = alreadyServed;
 
 	// Do we have a status handler ?
-	if ( statusRoutes[res.statusCode.toString()] ) {
+	routes = self.statusRoutes[res.statusCode.toString()];
+	if ( routes ) {
 		req.onStatusRouteH = true;
-		return statusRoutes[res.statusCode.toString()].handler(req,res);
+		return mapSeries(routes,self,
+			function(r,next){
+				return _fireHook(self,'findroute',[req,res,{route:r}],next);
+			},
+			function(){
+				var
+					handlers = routes.map(function(r){return r.handler});
+
+				// Call the handlers
+				return series(handlers,[self,req,res],function(err,done){});
+			}
+		);
 	}
 
 	// Already served ? Ciao!
@@ -592,95 +552,167 @@ var routeStatus = function(req,res,alreadyServed,headers) {
 		return;
 
 	// No.. default status handler
-	ans =	(res.statusCode == 404) ? { error: 'No route for this request type' } :
-		(res.statusCode == 401) ? { warn:  'Authentication required' } :
-		(res.statusCode >= 400) ? { error: 'Got error '+res.statusCode } :
-					  { info:  'Returning status '+res.statusCode };
+	ans =	(res.statusCode == 404) ? 	{ error: 'No route for this request type' } :
+			(res.statusCode == 401) ?	{ warn:  'Authentication required' } :
+			(res.statusCode >= 400) ?	{ error: 'Got error '+res.statusCode } :
+										{ info:  'Returning status '+res.statusCode };
 
 	// Something to answer? Answer..!
 	if ( ans && !alreadyServed )
 		return self.json(req,res,ans,res.statusCode,headers);
 
 };
+exports._routeStatus = _routeStatus;
 
 
-var buildAuthRule = function(pattern,auth) {
+// Write the head of an HTTP response
+var _writeHead = function(self,req,res,status,headers,callback){
 
-	// Auth is a function, put her on the right place
-	if ( typeof(auth) == "function" )
-		auth = { check: auth };
+	var
+		headObj = {status: status, headers: headers};
 
-	// No realm? Set a default one
-	if ( !auth.realm )
-		auth.real = 'Authentication required';
-
-	// Didn't specify a check function but specified a username and password, build the function
-	if ( !auth.check && auth.username && auth.password ) {
-		auth.check = function(u,p,callback){
-			return callback(null,(u == auth.username && p == auth.password));
-		};
-	}
-
-	// Has a URL pattern ? If no.. default
-	auth.pattern = (pattern || /.*/);
-
-	// Has a method ? Yes.. make sure it's uppercase
-	if ( auth.method )
-		auth.method = auth.method.toUpperCase();
-
-	return auth;
+	return _fireHook(self,'beforewritehead',[req,res,headObj],function(){
+		res.writeHead(headObj.status,headObj.headers);
+		// Mark on the answer that we sent it
+		res._sent = true;
+		res.statusCode = headObj.status;
+		return callback();
+	});
 
 };
+exports._writeHead = _writeHead;
 
+// Write the head of an HTTP response
+var _writeData = function(self,req,res,data,end,callback){
 
+	var
+		dataObj = { data: data, end: end };
 
-exports.template = function(req,res,filename,args,status,headers){
+	return _fireHook(self,'beforewritedata',[req,res,dataObj],function(){
 
-	if( !self.templateEngine ){
-		res.writeHead(500,{'content-type':'text/html; charset=utf-8'});
-		return res.end("Error: No template engine defined!");
-	}
-
-	if( !(self.templateEngine in consolidate) ){
-		res.writeHead(500,{'content-type':'text/html; charset=utf-8'});
-		return res.end("Error: Invalid or not installed template engine \""+ self.templateEngine +"\"");
-	}
-
-	consolidate[ self.templateEngine ]( self.templatePath + filename, args, function(err, html){
-
-		if( err ){
-			res.writeHead(500,{'content-type':'text/html; charset=utf-8'});
-			return res.end("Error: "+err);
+		// Just writing...
+		if ( !dataObj.end ) {
+			res.write(dataObj.data);
+			return callback();
 		}
 
-		var
-			length = Buffer.byteLength(html,'utf8');
+		// Write and end
+		return _fireHook(self,'beforefinish',[req,res,dataObj],function(){
+			res.end(dataObj.data);
 
-		// Send the html
-		res.statusCode = status || 200;
-		res.writeHead(res.statusCode,_merge({
-			'content-type':		'text/html; charset=utf-8',
-			'content-length':	length
-		},headers));
-		res.end(html);
-
-		// Log
-		_access_log(req,res,length);
-
-		// Report status
-		return routeStatus(req,res,true);
+			// Finish
+			return _fireHook(self,'finish',[req,res,{}],function(){
+				return callback();
+			});
+		});
 	});
+
+}
+exports._writeData = _writeData;
+
+// Pipe a stream into an HTTP response
+var _pipeStream = function(self,req,res,stream,callback){
+
+	var
+		pr;
+
+	return _fireHook(self,'beforewritedata',[req,res,stream],function(){
+
+		// Pipe the stream
+ 		pr = stream.pipe(res);
+		pr.on('end',function(){
+			callback(null,true);
+		});
+
+	});
+
 };
+exports._pipeStream = _pipeStream;
+
+
+// Answer with a text string
+exports.text = function(req,res,content,status,headers,callback) {
+
+	var
+		self = this,
+		length = Buffer.byteLength(content,'utf8'),
+		_headers = _merge({
+			'content-type':		'text/plain; charset=utf-8',
+			'content-length':	length,
+			'date':				new Date().toUTCString()
+		},headers,true);
+
+	// Set the status code
+	res.statusCode = status || 200;
+
+	// Send data
+	return _writeHead(self,req,res,res.statusCode,_headers,function(){
+		return _writeData(self,req,res,content,true,function(){
+			// Log
+			self._access_log(req,res,length);
+
+			// Report status
+			self._routeStatus(req,res,true);
+
+			// Call the callback
+			if ( callback )
+				callback(null,true);
+		});
+	});
+
+};
+
+// Answer with JSON
+exports.json = function(req,res,content,status,headers,pretty,callback) {
+
+	var
+		strfyArgs = [content];
+
+	if ( pretty && typeof pretty == "function" ) {
+		callback = pretty;
+		pretty = false;
+	}
+	if ( pretty )
+		strfyArgs.push(null,4);
+
+	// Build JSON content
+	content = JSON.stringify.apply(null,strfyArgs);
+
+	// JSONP ?
+	if ( req.args.callback )
+		content = req.args.callback.toString() + "(" + content.replace(/[\u00a0\u2000-\u203f]/g,"") + ");";
+
+	// Send the data
+	this.text(req,res,content,status,_merge({"content-type":"application/json; charset=utf-8"},headers,true));
+
+	// Call the callback
+	if ( callback )
+		callback(null,true);
+
+};
+
+
+// Template
+exports.template = function(req,res,file,data,status,headers,callback){
+
+	throw new Exception("No templating module was loaded. Use spritz.use()");
+
+};
+
+
+/*
+ * Internals
+ */
 
 // Logging functions
 var _log_info = function() {
-        return _log("INFO:  ",arguments);
+    return _log("INFO:  ",arguments);
 }
 var _log_warn = function() {
-        return _log("WARN:  ",arguments);
+    return _log("WARN:  ",arguments);
 }
 var _log_error = function() {
-        return _log("ERROR: ",arguments);
+    return _log("ERROR: ",arguments);
 }
 var _log = function(type,args) {
 	var
@@ -703,10 +735,14 @@ var _log = function(type,args) {
 		// Send to the master process, so we avoid problems with many processes writing on the same file
 		process.send({fn:'console.log',args: _args});
 	}
-}
+};
+exports._log		= _log;
+exports._log_info	= _log_info;
+exports._log_warn	= _log_warn;
+exports._log_error	= _log_error;
 
 // Access log
-var _access_log = function(req,res,length) {
+exports._access_log = function(req,res,length) {
 	var
 		timeSpent = new Date().getTime() - req.xConnectDate.getTime();
 
@@ -714,20 +750,63 @@ var _access_log = function(req,res,length) {
 };
 
 // Merge 2 objects
-var _merge = function(a,b){
+var _merge = function(a,b,lcProps){
 	var o = {};
 	if ( a != null ) {
 		for ( var p in a )
-			o[p.toLowerCase()] = a[p];
+			o[lcProps?p.toLowerCase():p] = a[p];
 	}
 	if ( b != null ) {
 		for ( var p in b )
-			o[p.toLowerCase()] = b[p];
+			o[lcProps?p.toLowerCase():p] = b[p];
 	}
 	return o;
 };
+exports._merge = _merge;
 
 // Asyncronous if
 var _if = function(c,a,b) {
 	return c ? a(b) : b();
 };
+
+
+// Call a list of callbacks in series (could eventually be replaced by async.series or async.mapSeries but we don't want to add more dependencies)
+var series = function(fns,args,callback){
+	var
+		_self	= args.shift(),
+		_fns	= fns.slice(),
+		_next	= function(){
+			if ( !_fns.length )
+				return callback(null,false);
+			_fns.shift().apply(_self,args);
+		};
+
+	// Add as last argument our function return handler
+	args.push(function(err,stop,done){
+		if ( err )
+			return callback(err,false);
+		return (stop || done) ? callback(null,done) : setImmediate(_next);
+	});
+
+	return _next();
+};
+
+var mapSeries = function(arr,_self,itCb,fiCb){
+	var
+		_arr	= arr.slice(),
+		_res	= [],
+		_next	= function(err,res){
+			if ( !_arr.length )
+				return fiCb(err,_res);
+			itCb.apply(_self,[_arr.shift(),function(err,res){
+				if ( err )
+					return fiCb(err,_res);
+				_res.push(res);
+				setImmediate(_next);
+			}]);
+		};
+    return _next();
+};
+
+// Load all the built-in modules
+exports.use(require('./modules'));
