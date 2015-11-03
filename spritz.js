@@ -332,8 +332,8 @@ var handleRequest = function(self,req,res) {
 		req.readPOSTData = function(cb){cb(null,{});};
 		if ( req.method == "POST" ) {
 			req.readPOSTData = function(cb){
-				return readPOSTData(this,function(err){
-					return cb(err,this.POSTdata);
+				return readPOSTData(self,req,function(err){
+					return cb(err,self.POSTdata);
 				});
 			};
 		}
@@ -350,7 +350,7 @@ var handleRequest = function(self,req,res) {
 };
 
 // Read data from POST and parse it
-var readPOSTData = function(req,callback) {
+var readPOSTData = function(self,req,callback) {
 
 	// POST data already read, don't do it again
 	if ( req._readPOSTData )
@@ -382,12 +382,12 @@ var readPOSTData = function(req,callback) {
 		req.on('data',function(chunk){ buf += chunk; });
 		req.on('end',function(){
 			if ( req._cType == "application/json" ) {
-				try { req.POSTjson = JSON.parse(buf); } catch(ex){ _log_error("Error parsing POST JSON: ",ex); }
+				try { req.POSTjson = JSON.parse(buf); } catch(ex){ _log_error("Error parsing POST JSON: ",ex.toString(),"JSON: ",buf); }
 			}
 			else {
 				req.POSTargs = qs.parse(buf);
 				if ( req.POSTargs['json'] )
-					try { req.POSTjson = JSON.parse(req.POSTargs['json']); } catch(ex){  _log_error("Error parsing POST JSON: ",ex); }
+					try { req.POSTjson = JSON.parse(req.POSTargs['json']); } catch(ex){  _log_error("Error parsing POST JSON: ",ex.toString(),"JOSN: ",req.POSTargs['json']); }
 			}
 			return callback(null,req);
 		});
