@@ -1,7 +1,5 @@
 # spritz: A pretty simple web server framework
 
-[![Join the chat at https://gitter.im/ricmalta/node-spritz](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/ricmalta/node-spritz?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
-
 `spritz` is a really simple framework for dealing with `http` request/response stuff
 
 # Installing
