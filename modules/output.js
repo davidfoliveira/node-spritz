@@ -36,8 +36,9 @@ exports.init = function(){
             if ( err ) {
                 if ( err.code == "ENOENT" ) {
                     res.statusCode = 404;
-                    callback(err,null);
-                    return routeStatus(req,res,false);
+                    if ( callback )
+                        callback(err,null);
+                    return this._routeStatus(req,res,false);
                 }
 
                 // Send the error
@@ -66,7 +67,7 @@ exports.init = function(){
                 return self._pipeStream(self,req,res,fs.createReadStream(filename),function(){
 
                     // Write and end
-                    return self._fireHook(self,'beforefinish',[req,res,dataObj],function(){
+                    return self._fireHook(self,'beforefinish',[req,res,{}],function(){
                         res.end();
 
                         // Finish

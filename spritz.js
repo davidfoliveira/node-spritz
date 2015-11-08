@@ -128,7 +128,7 @@ exports.hook = function(name,callback){
 
 
 // Fires a hook
-var _fireHook = function(self,name,args,callback) {
+exports._fireHook = function(self,name,args,callback) {
 
 	var
 		sentBeforeHook = (args.length > 1 && args[1]._sent),
@@ -169,7 +169,7 @@ var _fireHook = function(self,name,args,callback) {
 };
 
 // Fires a syncronous hook
-var _fireSyncHook = function(self,name,args,callback) {
+exports._fireSyncHook = function(self,name,args,callback) {
 
 	var
 		sentBeforeHook = (args.length > 1 && args[1]._sent),
@@ -301,7 +301,7 @@ var handleRequest = function(self,req,res) {
 		now = new Date();
 
 	// Request just arrived, fire the hook
-	return _fireHook(self,'arrive',[req,res,{}],function(){
+	return self._fireHook(self,'arrive',[req,res,{}],function(){
 
 		// Request related values
 		req._cType = req.headers['content-type'] ? req.headers['content-type'].toString().replace(/;.*/g,"") : "unknown/unknown";
@@ -339,7 +339,7 @@ var handleRequest = function(self,req,res) {
 		}
 
 		// Finished read request
-		return _fireHook(self,'readheaders',[req,res,{}],function(){
+		return self._fireHook(self,'readheaders',[req,res,{}],function(){
 
 			// Route request
 			return self._route(req,res);
@@ -420,7 +420,7 @@ exports.on = function(r,opts,reqHandler){
 	},args.shift()||{});
 
 	// Fire the setroute hook
-	if ( _fireSyncHook(self,'setroute',[opts]) ) {
+	if ( self._fireSyncHook(self,'setroute',[opts]) ) {
 		// Setting route was aborted
 		return;
 	}
@@ -478,7 +478,7 @@ var _route = function(req,res) {
 	if ( !routeOpts ) {
 		res.statusCode = 404;
 		// Fire read hook
-		return _fireHook(self,'read',[req,res,{}],function(){
+		return self._fireHook(self,'read',[req,res,{}],function(){
 			return self._routeStatus(req,res,false);
 		});
 	}
@@ -493,11 +493,11 @@ var _route = function(req,res) {
 				_log_error("Error reading request POST data: ",err);
 
 			// Fire read hook
-			return _fireHook(self,'read',[req,res,{}],function(){
+			return self._fireHook(self,'read',[req,res,{}],function(){
 
 				// Fire find route hook
 				req._route = routeOpts;
-				return _fireHook(self,'findroute',[req,res,{route: routeOpts}],function(){
+				return self._fireHook(self,'findroute',[req,res,{route: routeOpts}],function(){
 
 					// Set the RegExp object
 					if ( matchedRoute )
@@ -535,7 +535,7 @@ var _routeStatus = function(req,res,alreadyServed,headers) {
 		req.onStatusRouteH = true;
 		return mapSeries(routes,self,
 			function(r,next){
-				return _fireHook(self,'findroute',[req,res,{route:r}],next);
+				return self._fireHook(self,'findroute',[req,res,{route:r}],next);
 			},
 			function(){
 				var
@@ -571,7 +571,7 @@ var _writeHead = function(self,req,res,status,headers,callback){
 	var
 		headObj = {status: status, headers: headers};
 
-	return _fireHook(self,'beforewritehead',[req,res,headObj],function(){
+	return self._fireHook(self,'beforewritehead',[req,res,headObj],function(){
 		res.writeHead(headObj.status,headObj.headers);
 		// Mark on the answer that we sent it
 		res._sent = true;
@@ -588,7 +588,7 @@ var _writeData = function(self,req,res,data,end,callback){
 	var
 		dataObj = { data: data, end: end };
 
-	return _fireHook(self,'beforewritedata',[req,res,dataObj],function(){
+	return self._fireHook(self,'beforewritedata',[req,res,dataObj],function(){
 
 		// Just writing...
 		if ( !dataObj.end ) {
@@ -597,11 +597,11 @@ var _writeData = function(self,req,res,data,end,callback){
 		}
 
 		// Write and end
-		return _fireHook(self,'beforefinish',[req,res,dataObj],function(){
+		return self._fireHook(self,'beforefinish',[req,res,dataObj],function(){
 			res.end(dataObj.data);
 
 			// Finish
-			return _fireHook(self,'finish',[req,res,{}],function(){
+			return self._fireHook(self,'finish',[req,res,{}],function(){
 				return callback();
 			});
 		});
@@ -616,11 +616,11 @@ var _pipeStream = function(self,req,res,stream,callback){
 	var
 		pr;
 
-	return _fireHook(self,'beforewritedata',[req,res,stream],function(){
+	return self._fireHook(self,'beforewritedata',[req,res,stream],function(){
 
 		// Pipe the stream
  		pr = stream.pipe(res);
-		pr.on('end',function(){
+		stream.on('end',function(){
 			callback(null,true);
 		});
 
