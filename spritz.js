@@ -25,8 +25,8 @@ exports.hooks			= {
 	'arrive':			[],		// async | done
 	'readheaders':		[],		// async | done
 	'read':				[],		// async | done
-
 	'findroute':		[],		// async | done
+
 	'beforewritehead':	[],		// async | done
 	// writehead ->				// async | done
 	'beforewritedata':	[],		// async | done
