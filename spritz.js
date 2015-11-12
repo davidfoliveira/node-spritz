@@ -201,7 +201,7 @@ exports.start = function(opts,callback){
 		self = this,
 		args = Array.prototype.slice.call(arguments, 0),
 		numProcs,
-		workers = [];
+		workers = {};
 
 	// Get and validate arguments
 	if ( typeof opts == "function" ) {
@@ -228,26 +228,18 @@ exports.start = function(opts,callback){
 		if ( cluster.isMaster ) {
 			process.title = "Spritz MASTER";
 			_log_info("Launching "+numProcs+" childs...");
-			for ( var x = 0 ; x < numProcs ; x++ )
-				workers.push(cluster.fork());
-
-			// When a message arrives
-			workers.forEach(function(worker){
-				worker.on('message', function(msg) {
-					if ( typeof(msg) == "object" && msg.fn == "console.log" ) {
-						msg.args.unshift("#"+worker.process.pid+":\t");
-						console.log.apply(console,msg.args);
-					}
-				});
-			});
+			for ( var x = 0 ; x < numProcs ; x++ ) {
+				var worker = cluster.fork();
+				_workerSetup(workers,worker);
+			}
 
 			_log_info("Launched "+numProcs+" childs");
 			cluster.on('exit',function(worker,code,signal){
-				self._log_error("Process #"+worker.process.pid+" died (signal "+signal+")");
+				delete workers[worker.process.pid];
+				self._log_error("Process #"+worker.process.pid+" died (signal "+signal+"). Launching other...");				
+				var worker = cluster.fork();
+				_workerSetup(workers,worker);
 			});
-
-			// Some fake methods
-//			self.on = function(){};
 		}
 		else {
 			process.title = "Spritz child process";
@@ -258,6 +250,22 @@ exports.start = function(opts,callback){
 		return _startServer(self,opts,callback);
 
 };
+
+// Setup a worker
+var _workerSetup = function(list,worker) {
+
+	// Add worker to the list
+	list[worker.process.pid] = worker;
+
+	// Listen for messages
+	worker.on('message', function(msg) {
+		if ( typeof(msg) == "object" && msg.fn == "console.log" ) {
+			msg.args.unshift("#"+worker.process.pid+":\t");
+			console.log.apply(console,msg.args);
+		}
+	});
+
+}
 
 // Start the HTTP server
 var _startServer = function(self,opts,callback){
