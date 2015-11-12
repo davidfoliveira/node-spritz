@@ -1,7 +1,7 @@
 // Metadata
 exports._meta = {
 	core: true,
-	type: "templating",
+	type: "auth",
 	name: "basicauth"
 };
 
