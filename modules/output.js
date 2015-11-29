@@ -38,7 +38,7 @@ exports.init = function(){
                     res.statusCode = 404;
                     if ( callback )
                         callback(err,null);
-                    return this._routeStatus(req,res,false);
+                    return self._routeStatus(req,res,false);
                 }
 
                 // Send the error
