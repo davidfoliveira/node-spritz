@@ -64,8 +64,11 @@
 	    return callback();
 	});
 
-	// Use a module
+	// Use a (template) module
 	spritz.use(require('spritz-jstemplate'));
+	spritz.on('/use-a-template/',function(req,res){
+	    spritz.template(req,res,'template.jst',{some:'value',other:'value'});
+	});
 
 	// Set an authentication rule for a specific URL pattern (pattern is optional)
 	//spritz.auth(/^\/pass/,{check:function(u,p,cb){ return cb(null,u=="capo" && p=="dei capi"); }});
