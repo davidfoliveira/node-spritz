@@ -346,6 +346,9 @@ var handleRequest = function(self,req,res) {
 			};
 		}
 
+		// The logging flags
+		req.xLoggingFlags = [];
+
 		// Finished read request
 		return self._fireHook(self,'readheaders',[req,res,{}],function(){
 
@@ -752,9 +755,13 @@ exports._log_error	= _log_error;
 // Access log
 exports._access_log = function(req,res,length) {
 	var
-		timeSpent = new Date().getTime() - req.xConnectDate.getTime();
+		timeSpent = new Date().getTime() - req.xConnectDate.getTime(),
+		flags = "";
 
-	_log(req.xRemoteAddr+(req.xDirectRemoteAddr?"/"+req.xDirectRemoteAddr:"")+" - "+req.xRequestID+" ["+req.xConnectDate.toString()+"] \""+req.method+" "+(req.originalURL || req.url)+" HTTP/"+req.httpVersionMajor+"."+req.httpVersionMajor+"\" "+res.statusCode+" "+(length||"-")+" "+(timeSpent / 1000).toString());
+	if ( req.xLoggingFlags && req.xLoggingFlags.length > 0 )
+		flags = " "+req.xLoggingFlags.join('');
+
+	_log(req.xRemoteAddr+(req.xDirectRemoteAddr?"/"+req.xDirectRemoteAddr:"")+" - "+req.xRequestID+" ["+req.xConnectDate.toString()+"] \""+req.method+" "+(req.originalURL || req.url)+" HTTP/"+req.httpVersionMajor+"."+req.httpVersionMajor+"\" "+res.statusCode+" "+(length||"-")+" "+(timeSpent / 1000).toString()+flags);
 };
 
 // Merge 2 objects

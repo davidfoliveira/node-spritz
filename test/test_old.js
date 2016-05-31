@@ -42,6 +42,7 @@ spritz.on('/cache/',{cache:true},function(req,res){
 
 // Status handlers
 spritz.on(404,function(req,res){
+	req.xLoggingFlags.push("X");
 	spritz.text(req,res,'404 - Cosa vuole, signore?',404);
 });
 //spritz.on(200,function(req,res){
