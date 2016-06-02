@@ -276,6 +276,9 @@ var _startServer = function(self,opts,callback){
 			handleRequest(self,req,res);
 		};
 
+	// Do we have a callback?
+	if ( !callback )
+		callback = function(){};
 
 	// Create the server
 	iface = (opts.proto == 'fastcgi')	? require('fastcgi-server') :
@@ -289,11 +292,11 @@ var _startServer = function(self,opts,callback){
 	if ( opts.port == null )
 		opts.port = (opts.proto == "https") ? 443 : 8080;
 	if ( opts.port ) {
-		self._server.listen(opts.port || 8080,opts.address || "0.0.0.0");
+		self._server.listen(opts.port || 8080,opts.address || "0.0.0.0",callback);
 		_log_info("Listening on "+(opts.address || "0.0.0.0")+":"+opts.port);
 	}
 	else if ( opts.address && opts.address.match(/\//) ) {
-		self._server.listen(opts.address);
+		self._server.listen(opts.address,callback);
 		_log_info("Listening on "+opts.address+" UNIX domain socket");
 	}
 	else {
