@@ -33,7 +33,7 @@ exports.init = function(){
         res         = args.shift();
         hostOrURL   = args.shift();
         opts        = args.pop() || {};
-        port        = args.shift();
+        port        = args.shift() || 80;
 
         // What url ?
         url = (req.url === req.urlNoArgs) ? req.originalURL : req.url;
