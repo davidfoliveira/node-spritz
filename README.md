@@ -10,7 +10,7 @@
 
 # Available functions
 
-- _spritz_.**start**(options): Starts a new instance of an HTTP server based on the supplied options;
+- _spritz_.**start**(options[, callback]): Starts a new instance of an HTTP server based on the supplied options;
 
   The available options are:
    * proto: The protocol to use on our server (the currently supported protocols are: http, https, fastcgi) - defaults to `http`;
@@ -23,7 +23,7 @@
 
 - _spritz_.**use**(extension): Loads a certain _spritz_ extension (i.e: middlewares, template engines, custom functions, etc...);
 
-- _spritz_.**on**(routePath|regExp|statusCode|hook, [options], callback): Declares a spritz route or status handler and its callback;
+- _spritz_.**on**(routePath|regExp|statusCode|hook[, options], callback): Declares a spritz route or status handler and its callback;
 
   The first argument can be:
    * A string containing the exact path of the route. I.e.: `'/about/'`;
@@ -40,13 +40,13 @@
 
 - _spritz_.**auth(routePath|regExp, authRule) - Defines an authentication rule for a certain route path or regular expression. Check the basic authentication section below.
 
-- _spritz_.**text(req, res, text, [[statusCode, [headers], [callback]]]) - Returns a text string as a response for a certain request;
+- _spritz_.**text(req, res, text[[, statusCode, [headers], [callback]]]) - Returns a text string as a response for a certain request;
 
-- _spritz_.**json(req, res, someObject, [[statusCode, [headers], [callback]]]) - Returns the serialized JSON content of an object as a response for a certain request;
+- _spritz_.**json(req, res, someObject[[, statusCode, [headers], [callback]]]) - Returns the serialized JSON content of an object as a response for a certain request;
 
-- _spritz_.**staticfile(req, res, filePath, [[statusCode, [headers], [callback]]]) - Returns the content of a file as a response for a certain request;
+- _spritz_.**staticfile(req, res, filePath[[, statusCode, [headers], [callback]]]) - Returns the content of a file as a response for a certain request;
 
-- _spritz_.**proxy(req, res, host|url, [[port, [options], [callback]]]) - Proxies the current request to another host or URL;
+- _spritz_.**proxy(req, res, host|url[[, port, [options], [callback]]]) - Proxies the current request to another host or URL;
 
   The port argument defaults to `80`;
 

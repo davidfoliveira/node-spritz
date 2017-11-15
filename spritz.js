@@ -276,6 +276,9 @@ var _startServer = function(self,opts,callback){
 			handleRequest(self,req,res);
 		};
 
+	// Do we have a callback?
+	if ( !callback )
+		callback = function(){};
 
 	// Create the server
 	iface = (opts.proto == 'fastcgi')	? require('fastcgi-server') :
@@ -289,11 +292,11 @@ var _startServer = function(self,opts,callback){
 	if ( opts.port == null )
 		opts.port = (opts.proto == "https") ? 443 : 8080;
 	if ( opts.port ) {
-		self._server.listen(opts.port || 8080,opts.address || "0.0.0.0");
+		self._server.listen(opts.port || 8080,opts.address || "0.0.0.0",callback);
 		_log_info("Listening on "+(opts.address || "0.0.0.0")+":"+opts.port);
 	}
 	else if ( opts.address && opts.address.match(/\//) ) {
-		self._server.listen(opts.address);
+		self._server.listen(opts.address,callback);
 		_log_info("Listening on "+opts.address+" UNIX domain socket");
 	}
 	else {
@@ -345,6 +348,9 @@ var handleRequest = function(self,req,res) {
 				});
 			};
 		}
+
+		// The logging flags
+		req.xLoggingFlags = [];
 
 		// Finished read request
 		return self._fireHook(self,'readheaders',[req,res,{}],function(){
@@ -752,9 +758,13 @@ exports._log_error	= _log_error;
 // Access log
 exports._access_log = function(req,res,length) {
 	var
-		timeSpent = new Date().getTime() - req.xConnectDate.getTime();
+		timeSpent = new Date().getTime() - req.xConnectDate.getTime(),
+		flags = "";
 
-	_log(req.xRemoteAddr+(req.xDirectRemoteAddr?"/"+req.xDirectRemoteAddr:"")+" - "+req.xRequestID+" ["+req.xConnectDate.toString()+"] \""+req.method+" "+(req.originalURL || req.url)+" HTTP/"+req.httpVersionMajor+"."+req.httpVersionMajor+"\" "+res.statusCode+" "+(length||"-")+" "+(timeSpent / 1000).toString());
+	if ( req.xLoggingFlags && req.xLoggingFlags.length > 0 )
+		flags = " "+req.xLoggingFlags.join('');
+
+	_log(req.xRemoteAddr+(req.xDirectRemoteAddr?"/"+req.xDirectRemoteAddr:"")+" - "+req.xRequestID+" ["+req.xConnectDate.toString()+"] \""+req.method+" "+(req.originalURL || req.url)+" HTTP/"+req.httpVersionMajor+"."+req.httpVersionMajor+"\" "+res.statusCode+" "+(length||"-")+" "+(timeSpent / 1000).toString()+flags);
 };
 
 // Merge 2 objects
