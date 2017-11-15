@@ -31,22 +31,24 @@
    * A status code, in case we want to declare a status handler. I.e.: `404`;
    * A hook name, started by the '#' (hash) sign, in case we want to declare a hook handler. Check the hooks section below;
 
+
   The available options (for route handlers) are:
-   * method: The method on what this route applies to - defaults to `GET`;
-   * dontReadPOSTData: Don't read the POST data (in case we want to use `spritz.proxy()` on this frequest)
-   * auth: A basic authentication rule. Check the basic authentication section below.
+   * method - The method on what this route applies to - defaults to `GET`;
+   * dontReadPOSTData: true - To not read the POST data from the request (in case we want to use `spritz.proxy()` on this request);
+   * auth - A basic authentication rule. Check the basic authentication section below.
 
-  The callback will already get the request and response objects as arguments.
 
-- _spritz_.**auth(routePath|regExp, authRule) - Defines an authentication rule for a certain route path or regular expression. Check the basic authentication section below.
+  The callback will always get `(request, response)` as arguments.
 
-- _spritz_.**text(req, res, text[[, statusCode, [headers], [callback]]]) - Returns a text string as a response for a certain request;
+- _spritz_.**auth**(routePath|regExp, authRule) - Defines an authentication rule for a certain route path or regular expression. Check the basic authentication section below.
 
-- _spritz_.**json(req, res, someObject[[, statusCode, [headers], [callback]]]) - Returns the serialized JSON content of an object as a response for a certain request;
+- _spritz_.**text**(req, res, text[[, statusCode, [headers], [callback]]]) - Returns a text string as a response for a certain request;
 
-- _spritz_.**staticfile(req, res, filePath[[, statusCode, [headers], [callback]]]) - Returns the content of a file as a response for a certain request;
+- _spritz_.**json**(req, res, someObject[[, statusCode, [headers], [callback]]]) - Returns the serialized JSON content of an object as a response for a certain request;
 
-- _spritz_.**proxy(req, res, host|url[[, port, [options], [callback]]]) - Proxies the current request to another host or URL;
+- _spritz_.**staticfile**(req, res, filePath[[, statusCode, [headers], [callback]]]) - Returns the content of a file as a response for a certain request;
+
+- _spritz_.**proxy**(req, res, host|url[[, port, [options], [callback]]]) - Proxies the current request to another host or URL;
 
   The port argument defaults to `80`;
 
@@ -63,24 +65,24 @@
 # Hooks
 
 The available hooks are:
-- #setroute - Called when a route is declared;
-- #arrive - Right after a request arrives;
-- #readheaders - After the headers of a request are read;
-- #read - After a request is read;
-- #findroute - After finding (or not) the matching route for a request;
-- #beforewritehead - Before writing the headers of a response;
-- #beforewritedata - Bebore writing the content of a response;
-- #beforefinish - Before finishing to handle a request and sending its response;
-- #finish - After finishing to handle a request and sending its response;
+- #setroute - Called when a route is declared (synchronous);
+- #arrive - Right after a request arrives (asynchronous);
+- #readheaders - After the headers of a request are read (asynchronous);
+- #read - After a request is read (asynchronous);
+- #findroute - After finding (or not) the matching route for a request (asynchronous);
+- #beforewritehead - Before writing the headers of a response (asynchronous);
+- #beforewritedata - Bebore writing the content of a response (asynchronous);
+- #beforefinish - Before finishing to handle a request and sending its response (asynchronous);
+- #finish - After finishing to handle a request and sending its response (asynchronous).
 
-Hooks declared in UPPERCASE (i.e.: `#SETROUTE`) via `spritz.on()` will be declared as global hooks and will be used in every spritz server instance.
+Hooks declared in UPPERCASE (i.e.: `#SETROUTE`) via `spritz.on()` will be declared as global and will be used in every spritz server instance.
 
 
 # Basic authentication
 
-Basic authentication support is supported as a built-in feature. Authentication rules can be specified either via `spritz.auth('/some_route', someRule)` or `spritz.on('/some_route', {auth: someRule})`.
+Basic authentication is supported as a built-in feature. Authentication rules can be specified either via `spritz.auth('/some_route', someRule)` or `spritz.on('/some_route', {auth: someRule}, ...)`.
 
-An authentication rule should always contain a `real` property and also either a username/password pair or a `check` function which is responsible to verify if the supplied user/pass pair is valid.
+An authentication rule should always contain a `realm` property and either a username/password pair or a `check` function which is responsible to verify if the supplied user/pass pair is valid.
 
 Examples of authentication rules:
 
