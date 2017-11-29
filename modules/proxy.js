@@ -97,7 +97,7 @@ exports.init = function(){
                 if ( _opts.onTimeout )
                     return _opts.onTimeout();
                 return self._writeHead(self,req,res,502,{'Content-type':'text/plain; charset=UTF-8'},function(){
-                    return self._writeData(self,req,res,'502 - Gateway timeout :-(',true);
+                    return self._writeData(self,req,res,'502 - Gateway timeout :-(',true,function(){});
                 });
             },_opts.timeout);
         }
