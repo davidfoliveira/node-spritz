@@ -20,7 +20,9 @@ exports.init = function(){
     self.staticfile = function(req,res,filename,status,headers,callback) {
 
         var
-            ext = "unknown";
+            ext = "unknown",
+            hasRange = false,
+            streamOpts = {};
 
         // Remove unsafe stuff
         filename = filename.replace(/\.\./,"").replace(/\/+/,"/");
@@ -52,6 +54,15 @@ exports.init = function(){
                 });
             }
 
+            // Is this a range request?
+            if (req.headers.range && req.headers.range.toString().match(/bytes=(\d+)-(\d+)?/)) {
+                hasRange = true;
+                streamOpts = {
+                    start: parseInt(RegExp.$1) || 0,
+                    end:   RegExp.$2 != '' ? parseInt(RegExp.$2) : stat.size-1
+                };
+            }
+
             var
                 expires = new Date(),
                 _headers = self._merge({
@@ -60,11 +71,19 @@ exports.init = function(){
                     'date':             new Date().toUTCString()
                 },headers,true);
 
+            // Range headers
+            if (hasRange) {
+                _headers['content-length'] = streamOpts.end - streamOpts.start + 1;
+                _headers['content-range'] = 'bytes '+streamOpts.start+'-'+parseInt(streamOpts.end)+'/'+stat.size;
+                status = 206;
+            }
+
             // Send the http response head
             return self._writeHead(self,req,res,status || 200,_headers,function(){
+                const stream = fs.createReadStream(filename, streamOpts);
 
                 // Send file
-                return self._pipeStream(self,req,res,fs.createReadStream(filename),function(){
+                return self._pipeStream(self,req,res,stream,function(){
 
                     // Write and end
                     return self._fireHook(self,'beforefinish',[req,res,{}],function(){
