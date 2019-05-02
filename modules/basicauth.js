@@ -66,6 +66,7 @@ exports.init = function(){
 			}
 
 			// Continue
+			req.authUser = authUser;
 			return cb();
 		});
 
