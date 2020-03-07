@@ -129,7 +129,7 @@ exports.init = function(){
                                 callback(null,true);
 
                             // Log
-                            return _access_log(req,res,pres.headers['content-length']||docSize||'??');
+                            return self._access_log(req,res,pres.headers['content-length']||docSize||'??');
                         });
                     });
                 }
@@ -141,7 +141,7 @@ exports.init = function(){
                             callback(null,true);
 
                         // Log
-                        _access_log(req,res,pres.headers['content-length']||docSize||'??');
+                        self._access_log(req,res,pres.headers['content-length']||docSize||'??');
                     });
                 }
             });
