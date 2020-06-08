@@ -195,7 +195,7 @@ exports._fireSyncHook = function(self,name,args,callback) {
 
 
 // Start the server
-exports.start = function(opts,callback){
+exports.start = function(opts, callback){
 
 	var
 		self = this,
@@ -246,8 +246,9 @@ exports.start = function(opts,callback){
 			return _startServer(self,opts,callback);
 		}
 	}
-	else
+	else {
 		return _startServer(self,opts,callback);
+	}
 
 };
 
@@ -268,7 +269,7 @@ var _workerSetup = function(list,worker) {
 }
 
 // Start the HTTP server
-var _startServer = function(self,opts,callback){
+var _startServer = function(self, opts, callback){
 
 	var
 		iface,
@@ -276,27 +277,26 @@ var _startServer = function(self,opts,callback){
 			handleRequest(self,req,res);
 		};
 
+	self.handleRequest = _handleRequest;
+
 	// Do we have a callback?
 	if ( !callback )
 		callback = function(){};
 
-	// Create the server
-	iface = (opts.proto == 'fastcgi')	? require('fastcgi-server') :
-			(opts.proto == 'https')		? https	:
-			http;
-	self._server =	(opts.proto == "https")		? https.createServer(opts,_handleRequest) :
-					(opts.proto == "fastcgi")	? require('fastcgi-server').createServer(_handleRequest) :
-					http.createServer(_handleRequest);
+	// Decide which server module to use
+	iface = (opts.proto == 'fastcgi') ? require('fastcgi-server') :
+		(opts.proto == 'https')   ? https :
+		http;
 
 	// Listen
 	if ( opts.port == null )
 		opts.port = (opts.proto == "https") ? 443 : 8080;
 	if ( opts.port ) {
-		self._server.listen(opts.port || 8080,opts.address || "0.0.0.0",callback);
+		iface.createServer(_handleRequest).listen(opts.port || 8080,opts.address || "0.0.0.0",callback);
 		_log_info("Listening on "+(opts.address || "0.0.0.0")+":"+opts.port);
 	}
 	else if ( opts.address && opts.address.match(/\//) ) {
-		self._server.listen(opts.address,callback);
+		self.createServer(_handleRequest).listen(opts.address,callback);
 		_log_info("Listening on "+opts.address+" UNIX domain socket");
 	}
 	else {
@@ -439,24 +439,28 @@ exports.on = function(r,opts,reqHandler){
 		return;
 	}
 
-	// Is it a RegExp ?
-	if ( r instanceof RegExp ) {
-		// Register the route on the RegExp route list
-		self.rxRoutes.push([r,opts]);
-	}
-	else if ( typeof r == "string" ) {
-		// Register the route on the string route list
-		self.routes[(opts.method?opts.method.toUpperCase()+" ! ":"")+r] = opts;
-	}
-	else if ( typeof r == "number" ) {
-		r = r.toString();
-		if ( !self.statusRoutes[r] )
-			self.statusRoutes[r] = [];
-		// Register the route on the status route list
-		self.statusRoutes[r].push(opts);
-	}
-	else
-		throw new Error("Don't know what to do with route '"+r+"'");
+	var routes = (r instanceof Array) ? r : [r];
+
+	routes.forEach(function(r) {
+		// Is it a RegExp ?
+		if ( r instanceof RegExp ) {
+			// Register the route on the RegExp route list
+			self.rxRoutes.push([r,opts]);
+		}
+		else if ( typeof r == "string" ) {
+			// Register the route on the string route list
+			self.routes[(opts.method?opts.method.toUpperCase()+" ! ":"")+r] = opts;
+		}
+		else if ( typeof r == "number" ) {
+			r = r.toString();
+			if ( !self.statusRoutes[r] )
+				self.statusRoutes[r] = [];
+			// Register the route on the status route list
+			self.statusRoutes[r].push(opts);
+		}
+		else
+			throw new Error("Don't know what to do with route '"+r+"'");
+	});
 
 };
 
