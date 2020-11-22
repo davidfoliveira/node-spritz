@@ -10,10 +10,19 @@ exports._meta = {
 exports.init = function(){
 
 	// Register the auth function
-	this.auth = function(route,opts) {
+	this.auth = function(route, opts) {
+		if (typeof(route) !== 'string' && !(route instanceof RegExp))
+			opts = route;
 
-		console.log("MAKE ME");
-		
+		if ( typeof opts == "function" ) {
+			opts = { realm: 'Authentication required', check: opts };
+		}
+		else if ( typeof opts == "object" && opts.username && opts.password ) {
+			opts.check = function(u,p,cb){ return cb(null,u==opts.username && p==opts.password); };
+			if ( !opts.realm )
+				opts.realm = 'Authentication required';
+		}
+		this._auth = opts;
 	};
 
 	// Waits for the definition of a route with 'auth'
@@ -35,7 +44,8 @@ exports.init = function(){
 
 	// When a request arrives
 	this.on('#FINDROUTE',function(req,res,args,cb){
-		if ( !args || !args.route || !args.route.auth )
+		var auth = (args && args.route && args.route.auth) ? args.route.auth : this._auth;
+		if ( !auth )
 			return cb(null,false,false);
 
 		// Parse the user Authorization header
@@ -53,7 +63,7 @@ exports.init = function(){
 		}
 
 		// Check
-		return args.route.auth.check(authUser,authPass,function(err,ok){
+		return auth.check(authUser,authPass,function(err,ok){
 			if ( err ) {
 				self.json(req,res,{error:err},500);
 				return cb(null,true,true);
@@ -61,7 +71,7 @@ exports.init = function(){
 
 			// Authentication has failed
 			if ( !ok ) {
-				return self.json(req,res,{error:'Authentication failed'},401,{'www-authenticate':'Basic realm="'+args.route.auth.realm+'"'});
+				return self.json(req,res,{error:'Authentication failed'},401,{'www-authenticate':'Basic realm="'+auth.realm+'"'});
 				return cb(null,true,true);
 			}
 
@@ -73,3 +83,4 @@ exports.init = function(){
 	});
 
 };
+

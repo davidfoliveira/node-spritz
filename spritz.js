@@ -272,6 +272,7 @@ var _workerSetup = function(list,worker) {
 var _startServer = function(self, opts, callback){
 
 	var
+		server,
 		iface,
 		_handleRequest = function(req,res){
 			handleRequest(self,req,res);
@@ -292,16 +293,17 @@ var _startServer = function(self, opts, callback){
 	if ( opts.port == null )
 		opts.port = (opts.proto == "https") ? 443 : 8080;
 	if ( opts.port ) {
-		iface.createServer(_handleRequest).listen(opts.port || 8080,opts.address || "0.0.0.0",callback);
+		server = iface.createServer(_handleRequest).listen(opts.port || 8080,opts.address || "0.0.0.0",callback);
 		_log_info("Listening on "+(opts.address || "0.0.0.0")+":"+opts.port);
 	}
 	else if ( opts.address && opts.address.match(/\//) ) {
-		self.createServer(_handleRequest).listen(opts.address,callback);
+		server = self.createServer(_handleRequest).listen(opts.address,callback);
 		_log_info("Listening on "+opts.address+" UNIX domain socket");
 	}
 	else {
 		_log_warn("Don't know how to listen");
 	}
+	return server;
 
 };
 
