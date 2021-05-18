@@ -343,7 +343,7 @@ var handleRequest = function(self,req,res) {
 
 		// POST data reader
 		req.readPOSTData = function(cb){cb(null,{});};
-		if ( req.method == "POST" ) {
+		if ( req.method == "POST" || req.method == "PUT" ) {
 			req.readPOSTData = function(cb){
 				return readPOSTData(self,req,function(err){
 					return cb(err,self.POSTdata);
